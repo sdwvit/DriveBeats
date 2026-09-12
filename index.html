@@ -4,545 +4,648 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>DriveBeats — M1 Sensor Readout</title>
-  <meta name="description" content="Raw sensor readout for DriveBeats milestone 1.">
+  <title>DriveBeats</title>
+  <meta name="description" content="Generative driving music that reacts to how you drive.">
   <meta name="theme-color" content="#0a0a0c">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <style>
     :root {
-      --bg: #0a0a0c;
-      --panel: #141419;
-      --panel-2: #1c1c23;
-      --line: #2a2a34;
-      --text: #e8e8ee;
-      --dim: #8a8a99;
-      --accent: #4da3ff;
-      --pos: #35d07f;
-      --neg: #ff5c5c;
-      --warn: #ffb020;
-      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, "Cascadia Mono", monospace;
+      --bg:#0a0a0c; --panel:#141419; --panel-2:#1c1c23; --line:#2a2a34;
+      --text:#e8e8ee; --dim:#8a8a99; --accent:#4da3ff;
+      --pos:#35d07f; --neg:#ff5c5c; --warn:#ffb020;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
     }
-
-    * { box-sizing: border-box; }
-
-    html, body {
-      margin: 0;
-      background: var(--bg);
-      color: var(--text);
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-      -webkit-text-size-adjust: 100%;
-      overscroll-behavior: none;
+    * { box-sizing:border-box; }
+    html,body {
+      margin:0; background:var(--bg); color:var(--text);
+      font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+      -webkit-text-size-adjust:100%; overscroll-behavior:none;
     }
-
-    body {
-      padding: max(12px, env(safe-area-inset-top)) 12px max(12px, env(safe-area-inset-bottom));
-      min-height: 100vh;
-    }
-
-    h1 { font-size: 1.1rem; margin: 0 0 2px; letter-spacing: -0.01em; }
-    h2 {
-      font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.09em;
-      color: var(--dim); margin: 0 0 8px; font-weight: 600;
-    }
-
-    .sub { color: var(--dim); font-size: 0.78rem; margin: 0 0 16px; }
-
-    /* ---------- start screen ---------- */
-    #start { max-width: 460px; margin: 0 auto; }
-
-    .req {
-      background: var(--panel); border: 1px solid var(--line);
-      border-radius: 12px; padding: 14px 16px; margin: 0 0 14px;
-    }
-    .req ul { margin: 0; padding-left: 18px; }
-    .req li { font-size: 0.83rem; line-height: 1.55; color: var(--dim); margin-bottom: 5px; }
-    .req li strong { color: var(--text); font-weight: 600; }
-
+    body { padding:max(12px,env(safe-area-inset-top)) 12px max(12px,env(safe-area-inset-bottom)); }
+    h1 { font-size:1.1rem; margin:0 0 2px; }
+    h2 { font-size:.7rem; text-transform:uppercase; letter-spacing:.09em; color:var(--dim); margin:0 0 8px; font-weight:600; }
+    .sub { color:var(--dim); font-size:.78rem; margin:0 0 16px; }
+    #start { max-width:460px; margin:0 auto; }
+    #main  { max-width:560px; margin:0 auto; }
+    .card,.req { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px 14px; margin-bottom:10px; }
+    .req ul { margin:0; padding-left:18px; }
+    .req li { font-size:.83rem; line-height:1.55; color:var(--dim); margin-bottom:5px; }
+    .req li strong { color:var(--text); font-weight:600; }
     button {
-      font: inherit; cursor: pointer; border-radius: 10px;
-      border: 1px solid var(--line); background: var(--panel-2); color: var(--text);
-      padding: 10px 14px; -webkit-tap-highlight-color: transparent;
+      font:inherit; cursor:pointer; border-radius:10px; border:1px solid var(--line);
+      background:var(--panel-2); color:var(--text); padding:10px 14px;
+      -webkit-tap-highlight-color:transparent;
     }
-    button:active { background: #26262f; }
+    button:active { background:#26262f; }
+    #startBtn { display:block; width:100%; padding:18px; font-size:1.05rem; font-weight:600; background:var(--accent); color:#04121f; border:none; }
+    #startErr { color:var(--neg); font-size:.82rem; margin-top:12px; line-height:1.5; }
 
-    #startBtn {
-      display: block; width: 100%; padding: 18px;
-      font-size: 1.05rem; font-weight: 600;
-      background: var(--accent); color: #04121f; border: none;
-    }
-    #startBtn:active { background: #3d8ce0; }
+    /* big glanceable state */
+    .now { text-align:center; padding:18px 14px; }
+    .now .feel { font-size:2.1rem; font-weight:700; letter-spacing:-.02em; margin:0; }
+    .now .meta { color:var(--dim); font-size:.8rem; font-family:var(--mono); margin-top:6px; }
+    .meter { height:8px; background:var(--panel-2); border-radius:4px; overflow:hidden; margin-top:14px; }
+    .meter > div { height:100%; width:0; background:linear-gradient(90deg,var(--accent),var(--pos)); transition:width .12s linear; }
 
-    #startErr { color: var(--neg); font-size: 0.82rem; margin-top: 12px; line-height: 1.5; }
+    .axis { display:grid; grid-template-columns:22px 1fr 84px; align-items:center; gap:9px; margin-bottom:9px; }
+    .axis:last-child { margin-bottom:0; }
+    .axis .name { font-family:var(--mono); font-size:1rem; font-weight:700; color:var(--dim); }
+    .axis .val { font-family:var(--mono); font-size:.95rem; text-align:right; font-variant-numeric:tabular-nums; }
+    .bar { position:relative; height:26px; background:var(--panel-2); border-radius:5px; overflow:hidden; }
+    .bar .zero { position:absolute; left:50%; top:0; bottom:0; width:1px; background:var(--line); }
+    .bar .fill { position:absolute; top:3px; bottom:3px; left:50%; width:0; border-radius:3px; }
 
-    /* ---------- main ---------- */
-    #main { max-width: 560px; margin: 0 auto; }
-
-    .card {
-      background: var(--panel); border: 1px solid var(--line);
-      border-radius: 12px; padding: 12px 14px; margin-bottom: 10px;
-    }
-
-    /* axis rows */
-    .axis { display: grid; grid-template-columns: 22px 1fr 84px; align-items: center; gap: 9px; margin-bottom: 9px; }
-    .axis:last-child { margin-bottom: 0; }
-    .axis .name { font-family: var(--mono); font-size: 1rem; font-weight: 700; color: var(--dim); }
-    .axis .val  { font-family: var(--mono); font-size: 0.95rem; text-align: right; font-variant-numeric: tabular-nums; }
-
-    /* bipolar bar */
-    .bar { position: relative; height: 26px; background: var(--panel-2); border-radius: 5px; overflow: hidden; }
-    .bar .zero { position: absolute; left: 50%; top: 0; bottom: 0; width: 1px; background: var(--line); }
-    .bar .fill { position: absolute; top: 3px; bottom: 3px; left: 50%; width: 0; background: var(--accent); border-radius: 3px; }
-    .bar .pk { position: absolute; top: 1px; bottom: 1px; width: 2px; background: var(--warn); opacity: 0.85; }
-
-    /* generic key/value grid */
-    .kv { display: grid; grid-template-columns: 1fr auto; gap: 5px 12px; font-size: 0.84rem; }
-    .kv dt { color: var(--dim); }
-    .kv dd { margin: 0; font-family: var(--mono); text-align: right; font-variant-numeric: tabular-nums; }
-
-    .pill {
-      display: inline-block; padding: 2px 8px; border-radius: 20px;
-      font-size: 0.7rem; font-weight: 600; letter-spacing: 0.03em;
-    }
-    .pill.ok   { background: rgba(53,208,127,0.15); color: var(--pos); }
-    .pill.bad  { background: rgba(255,176,32,0.15); color: var(--warn); }
-
-    .banner {
-      border-radius: 10px; padding: 10px 12px; margin-bottom: 10px;
-      font-size: 0.82rem; line-height: 1.5;
-      background: rgba(255,176,32,0.1); border: 1px solid rgba(255,176,32,0.35); color: var(--warn);
-    }
-    .banner.err { background: rgba(255,92,92,0.1); border-color: rgba(255,92,92,0.35); color: var(--neg); }
-
-    .row { display: flex; gap: 8px; }
-    .row > button { flex: 1; font-size: 0.82rem; }
-
-    /* event log */
-    #events { font-family: var(--mono); font-size: 0.75rem; max-height: 220px; overflow-y: auto; }
-    #events .ev { padding: 6px 0; border-bottom: 1px solid var(--line); display: grid; grid-template-columns: 46px 1fr; gap: 8px; }
-    #events .ev:last-child { border-bottom: 0; }
-    #events .t { color: var(--dim); }
-    #events .d b { font-weight: 700; }
-    .pos { color: var(--pos); }
-    .neg { color: var(--neg); }
-    .empty { color: var(--dim); font-size: 0.8rem; font-family: -apple-system, system-ui, sans-serif; }
-
-    .hint { color: var(--dim); font-size: 0.75rem; line-height: 1.5; margin: 8px 0 0; }
-    [hidden] { display: none !important; }
+    .kv { display:grid; grid-template-columns:1fr auto; gap:5px 12px; font-size:.84rem; }
+    .kv dt { color:var(--dim); }
+    .kv dd { margin:0; font-family:var(--mono); text-align:right; font-variant-numeric:tabular-nums; }
+    .row { display:flex; gap:8px; }
+    .row > button { flex:1; font-size:.82rem; }
+    .banner { border-radius:10px; padding:10px 12px; margin-bottom:10px; font-size:.82rem; line-height:1.5;
+      background:rgba(255,176,32,.1); border:1px solid rgba(255,176,32,.35); color:var(--warn); }
+    .banner.err { background:rgba(255,92,92,.1); border-color:rgba(255,92,92,.35); color:var(--neg); }
+    input[type=range] { width:100%; accent-color:var(--accent); }
+    .hint { color:var(--dim); font-size:.75rem; line-height:1.5; margin:8px 0 0; }
+    .pos { color:var(--pos); } .neg { color:var(--neg); }
+    [hidden] { display:none !important; }
   </style>
 </head>
 
 <body>
 
-<!-- ============ START SCREEN ============ -->
 <section id="start">
-  <h1>DriveBeats — M1</h1>
-  <p class="sub">Sensor readout. No audio yet.</p>
-
+  <h1>DriveBeats</h1>
+  <p class="sub">Generative music that follows how you drive.</p>
   <div class="req">
     <h2>Before you start</h2>
     <ul>
-      <li>Phone <strong>rigidly mounted</strong>, screen up, <strong>top edge pointing forward</strong>, tilted slightly nose-down.</li>
-      <li>Plugged in — GPS plus a lit screen drains fast.</li>
-      <li>Do not touch the phone while moving. Everything below is automatic.</li>
+      <li>Phone <strong>rigidly mounted</strong>, screen up, <strong>top edge forward</strong>, tilted slightly nose-down.</li>
+      <li><strong>Turn off the silent switch</strong> — iOS will mute the audio otherwise.</li>
+      <li>Plugged in. Do not touch the phone while moving.</li>
     </ul>
   </div>
-
   <div class="req">
-    <h2>What this milestone is for</h2>
+    <h2>If it reacts backwards</h2>
     <ul>
-      <li>Confirm motion permission, sample rate and GPS all work on this phone.</li>
-      <li><strong>Discover the real sign convention.</strong> Brake once, accelerate once, turn right once. The event log records the peak of each, so you never need to look while driving.</li>
+      <li>The iOS axis signs are not confirmed yet. If braking sounds like accelerating, tap <strong>Flip forward</strong> once — it is remembered.</li>
     </ul>
   </div>
-
   <button id="startBtn">Start Drive</button>
   <p id="startErr" hidden></p>
 </section>
 
-<!-- ============ MAIN ============ -->
 <section id="main" hidden>
-
-  <div id="noMotion" class="banner err" hidden>
-    No motion events received. This device may have no accelerometer, or motion access was denied.
-  </div>
+  <div id="noMotion" class="banner err" hidden>No motion events received — motion access may have been denied.</div>
+  <div id="audioWarn" class="banner" hidden></div>
   <div id="mountWarn" class="banner" hidden></div>
 
-  <div class="card">
-    <h2>Linear acceleration — m/s² <span style="text-transform:none;letter-spacing:0">(gravity removed)</span></h2>
-    <div class="axis"><div class="name">x</div><div class="bar" id="bar-x"><div class="zero"></div><div class="fill"></div><div class="pk lo"></div><div class="pk hi"></div></div><div class="val" id="val-x">—</div></div>
-    <div class="axis"><div class="name">y</div><div class="bar" id="bar-y"><div class="zero"></div><div class="fill"></div><div class="pk lo"></div><div class="pk hi"></div></div><div class="val" id="val-y">—</div></div>
-    <div class="axis"><div class="name">z</div><div class="bar" id="bar-z"><div class="zero"></div><div class="fill"></div><div class="pk lo"></div><div class="pk hi"></div></div><div class="val" id="val-z">—</div></div>
-    <p class="hint">Scale ±8 m/s². Amber marks are peak hold since reset.</p>
+  <div class="card now">
+    <p class="feel" id="n-feel">—</p>
+    <p class="meta" id="n-meta">—</p>
+    <div class="meter"><div id="n-meter"></div></div>
   </div>
 
   <div class="card">
-    <h2>Peak hold</h2>
-    <dl class="kv">
-      <dt>x min / max</dt><dd id="pk-x">—</dd>
-      <dt>y min / max</dt><dd id="pk-y">—</dd>
-      <dt>z min / max</dt><dd id="pk-z">—</dd>
-    </dl>
+    <h2>Volume</h2>
+    <input type="range" id="vol" min="0" max="100" value="80">
     <div class="row" style="margin-top:10px">
-      <button id="resetPk">Reset peaks</button>
-      <button id="clearEv">Clear log</button>
+      <button id="flipFwd">Flip forward</button>
+      <button id="flipLat">Flip lateral</button>
     </div>
+    <p class="hint" id="signState">forward = +y, lateral = +x</p>
   </div>
 
   <div class="card">
-    <h2>Gravity &amp; mount</h2>
+    <h2>Acceleration — m/s² (car frame)</h2>
+    <div class="axis"><div class="name">fwd</div><div class="bar" id="bar-l"><div class="zero"></div><div class="fill"></div></div><div class="val" id="val-l">—</div></div>
+    <div class="axis"><div class="name">lat</div><div class="bar" id="bar-t"><div class="zero"></div><div class="fill"></div></div><div class="val" id="val-t">—</div></div>
+    <p class="hint">Forward positive = accelerating. Scale ±8 m/s².</p>
+  </div>
+
+  <div class="card">
+    <h2>Drive state</h2>
     <dl class="kv">
-      <dt>gravity vector</dt><dd id="g-vec">—</dd>
-      <dt>magnitude</dt><dd id="g-mag">—</dd>
-      <dt>pitch (nose-down)</dt><dd id="g-pitch">—</dd>
-      <dt>roll (side tilt)</dt><dd id="g-roll">—</dd>
-      <dt>dominant axis</dt><dd id="g-dom">—</dd>
-      <dt>screen facing</dt><dd id="g-face">—</dd>
+      <dt>intensity</dt><dd id="d-int">—</dd>
+      <dt>aggression</dt><dd id="d-agg">—</dd>
+      <dt>speed</dt><dd id="d-spd">—</dd>
+      <dt>stationary</dt><dd id="d-stat">—</dd>
+      <dt>sample rate</dt><dd id="d-rate">—</dd>
+      <dt>pitch / roll</dt><dd id="d-tilt">—</dd>
     </dl>
   </div>
-
-  <div class="card">
-    <h2>Sampling</h2>
-    <dl class="kv">
-      <dt>measured rate</dt><dd id="s-rate">—</dd>
-      <dt>reported interval</dt><dd id="s-int">—</dd>
-      <dt>samples</dt><dd id="s-count">0</dd>
-      <dt>dropped (dt &gt; 200ms)</dt><dd id="s-drop">0</dd>
-      <dt>rotation rate</dt><dd id="s-rot">—</dd>
-    </dl>
-  </div>
-
-  <div class="card">
-    <h2>GPS <span style="text-transform:none;letter-spacing:0">— logged, not used</span></h2>
-    <dl class="kv">
-      <dt>status</dt><dd id="gp-stat">—</dd>
-      <dt>speed</dt><dd id="gp-speed">—</dd>
-      <dt>heading</dt><dd id="gp-head">—</dd>
-      <dt>accuracy</dt><dd id="gp-acc">—</dd>
-      <dt>fixes</dt><dd id="gp-n">0</dd>
-    </dl>
-  </div>
-
-  <div class="card">
-    <h2>Event log — peaks above 3 m/s²</h2>
-    <div id="events"><p class="empty">Nothing yet. Brake firmly once, then accelerate firmly once, then take a right turn.</p></div>
-  </div>
-
-  <div class="card">
-    <h2>Session</h2>
-    <dl class="kv">
-      <dt>wake lock</dt><dd id="wl">—</dd>
-      <dt>elapsed</dt><dd id="elapsed">0:00</dd>
-    </dl>
-  </div>
-
 </section>
 
 <script>
 (() => {
   'use strict';
-
   const $ = id => document.getElementById(id);
-  const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
-  const fmt = (v, d = 2) => (v === null || v === undefined || Number.isNaN(v)) ? '—' : v.toFixed(d);
+  const clamp = (v,a,b) => v<a?a:v>b?b:v;
+  const fmt = (v,d=2) => (v===null||v===undefined||Number.isNaN(v))?'—':v.toFixed(d);
 
-  const BAR_SCALE = 8;        // m/s² at full deflection
-  const EVENT_ON  = 3.0;      // m/s² horizontal magnitude to open an event
-  const EVENT_OFF = 1.5;      // m/s² to close it (hysteresis)
-  const MAX_DT    = 0.2;      // s — above this we assume a gap, not a sample
-
-  // ---------- state ----------
-  const S = {
-    started: false,
-    t0: 0,
-    acc:  { x: 0, y: 0, z: 0 },
-    grav: { x: 0, y: 0, z: 0 },
-    gravInit: false,
-    rot:  { alpha: 0, beta: 0, gamma: 0 },
-    interval: null,
-    count: 0, dropped: 0,
-    lastT: 0,
-    rate: 0,
-    peak: { x: [0, 0], y: [0, 0], z: [0, 0] },   // [min, max]
-    gps: { speed: null, heading: null, acc: null, n: 0, status: 'idle' },
-    ev: { open: false, peakMag: 0, snap: null },
-    events: [],
-    dirty: true
+  const MAX_DT = 0.2, DEADBAND = 0.4;
+  const CFG = {
+    signFwd: +localStorage.getItem('db.signFwd') || 1,
+    signLat: +localStorage.getItem('db.signLat') || 1
   };
 
-  // ---------- start ----------
-  $('startBtn').addEventListener('click', async () => {
-    if (S.started) return;
-    const err = $('startErr');
-    err.hidden = true;
-    try {
-      // 1. Motion permission — must be inside this gesture on iOS.
-      if (typeof DeviceMotionEvent !== 'undefined' &&
-          typeof DeviceMotionEvent.requestPermission === 'function') {
-        const state = await DeviceMotionEvent.requestPermission();
-        if (state !== 'granted') {
-          err.textContent = 'Motion access was denied. Safari only asks once per page load — reload and tap Start again to retry.';
-          err.hidden = false;
-          return;
-        }
-      }
+  // ---- DriveState: the only thing the audio engine reads ----
+  const DS = {
+    speed:null, aLong:0, aLat:0, jerk:0,
+    intensity:0, aggression:0, cornering:0,
+    accel:0, brake:0, stationary:true
+  };
 
-      window.addEventListener('devicemotion', onMotion);
-
-      // 2. GPS — logged from M1 per spec decision 3, consumed by nothing yet.
-      startGeo();
-
-      // 3. Keep the screen awake.
-      requestWakeLock();
-
-      S.started = true;
-      S.t0 = performance.now();
-      $('start').hidden = true;
-      $('main').hidden = false;
-      requestAnimationFrame(render);
-
-      setTimeout(() => { if (S.count === 0) $('noMotion').hidden = false; }, 1500);
-    } catch (e) {
-      err.textContent = 'Could not start: ' + (e && e.message ? e.message : e) +
-        (location.protocol !== 'https:' && location.hostname !== 'localhost'
-          ? ' — note this page is not on HTTPS, which iOS requires for motion access.'
-          : '');
-      err.hidden = false;
-    }
-  });
+  const S = {
+    started:false, t0:0, lastT:0, count:0, dropped:0, rate:0,
+    f:{x:0,y:0,z:0},            // low-passed linear acceleration
+    grav:{x:0,y:0,z:0}, gravInit:false,
+    prevLong:0, stillSince:0,
+    gps:{speed:null,status:'idle'}
+  };
 
   // ---------- motion ----------
   function onMotion(e) {
     const now = performance.now();
-    const a = e.acceleration;
-    const ag = e.accelerationIncludingGravity;
+    const a = e.acceleration, ag = e.accelerationIncludingGravity;
+    if (!a || a.x === null) return;
 
+    let dt = 1/60;
     if (S.lastT) {
-      const dt = (now - S.lastT) / 1000;
-      if (dt > MAX_DT) {
-        // Integrating across a gap would fabricate a huge spike. Drop it.
-        S.dropped++;
-        S.lastT = now;
-        return;
-      }
-      // Smoothed rate estimate.
-      S.rate = S.rate ? S.rate * 0.9 + (1 / dt) * 0.1 : 1 / dt;
+      dt = (now - S.lastT)/1000;
+      if (dt > MAX_DT) { S.dropped++; S.lastT = now; return; }
+      S.rate = S.rate ? S.rate*0.9 + (1/dt)*0.1 : 1/dt;
     }
-    S.lastT = now;
-    S.count++;
-    if (e.interval) S.interval = e.interval;
+    S.lastT = now; S.count++;
 
-    if (a && a.x !== null) {
-      S.acc.x = a.x; S.acc.y = a.y; S.acc.z = a.z;
+    // Gravity, for the mount check only — acceleration is already gravity-free.
+    if (ag && ag.x !== null) {
+      const gx = ag.x-a.x, gy = ag.y-a.y, gz = ag.z-a.z;
+      if (!S.gravInit) { S.grav={x:gx,y:gy,z:gz}; S.gravInit=true; }
+      else { const k=0.02;
+        S.grav.x+=(gx-S.grav.x)*k; S.grav.y+=(gy-S.grav.y)*k; S.grav.z+=(gz-S.grav.z)*k; }
     }
 
-    // Gravity = accelerationIncludingGravity − acceleration, then heavily
-    // smoothed. Slow is correct: direction only changes if the mount moves.
-    if (ag && ag.x !== null && a && a.x !== null) {
-      const gx = ag.x - a.x, gy = ag.y - a.y, gz = ag.z - a.z;
-      if (!S.gravInit) {
-        S.grav.x = gx; S.grav.y = gy; S.grav.z = gz;
-        S.gravInit = true;
-      } else {
-        const k = 0.02;                     // τ ≈ 0.8s at 60Hz
-        S.grav.x += (gx - S.grav.x) * k;
-        S.grav.y += (gy - S.grav.y) * k;
-        S.grav.z += (gz - S.grav.z) * k;
-      }
-    }
+    // One-pole low-pass at ~2.5Hz: body dynamics below, road noise above.
+    const fc = 2.5, alpha = dt/((1/(2*Math.PI*fc)) + dt);
+    S.f.x += (a.x - S.f.x)*alpha;
+    S.f.y += (a.y - S.f.y)*alpha;
+    S.f.z += (a.z - S.f.z)*alpha;
 
-    if (e.rotationRate) S.rot = e.rotationRate;
+    const db = v => Math.abs(v) < DEADBAND ? 0 : v - Math.sign(v)*DEADBAND;
+    const aLong = db(S.f.y) * CFG.signFwd;
+    const aLat  = db(S.f.x) * CFG.signLat;
 
-    trackPeaks();
-    trackEvent(now);
-    S.dirty = true;
+    DS.jerk += (Math.abs(aLong - S.prevLong)/dt - DS.jerk) * 0.1;
+    S.prevLong = aLong;
+    DS.aLong = aLong; DS.aLat = aLat;
+
+    // Asymmetric: braking is much stronger than acceleration in every car.
+    DS.accel = clamp(aLong/4, 0, 1);
+    DS.brake = clamp(-aLong/7, 0, 1);
+    DS.cornering += (clamp(Math.abs(aLat)/5,0,1) - DS.cornering)*0.08;
+
+    const inst = clamp(Math.hypot(aLong, aLat)/5, 0, 1);
+    DS.intensity += (inst - DS.intensity) * (1 - Math.exp(-dt/0.5));      // fast, ~0.5s
+    DS.aggression += (clamp(inst + DS.jerk/25,0,1) - DS.aggression) * (1 - Math.exp(-dt/30)); // slow, ~30s
+
+    const moving = S.gps.speed !== null ? S.gps.speed > 0.7 : inst > 0.05;
+    if (moving) { S.stillSince = 0; DS.stationary = false; }
+    else { if (!S.stillSince) S.stillSince = now;
+           if (now - S.stillSince > 3000) DS.stationary = true; }
+    DS.speed = S.gps.speed;
+  }
+  // ============================================================
+  //  AUDIO ENGINE (M4) — generative driving techno
+  // ============================================================
+  const A = {
+    ac: null, master: null, lp: null, comp: null, limiter: null,
+    panBus: null, drumBus: null,
+    running: false,
+    bpm: 112, pendingBpm: 112,
+    step: 0,                 // 0..127  (8 bars of 16ths)
+    nextTime: 0,
+    timer: null,
+    feel: 'straight',        // half | straight | double
+    pendingFeel: 'straight',
+    scale: 'minor',
+    rest: 1,                 // 1 = full rest (pad only), 0 = full band
+    restTarget: 1
+  };
+
+  const LOOKAHEAD = 0.1;     // s of future to schedule
+  const TICK = 25;           // ms between scheduler wakeups
+  const ROOT = 57;           // A3
+
+  const SCALES = {
+    minor:      [0, 2, 3, 5, 7, 8, 10],
+    pentatonic: [0, 3, 5, 7, 10],
+    phrygian:   [0, 1, 3, 5, 7, 8, 10]
+  };
+  // i - VI - III - VII, two bars each
+  const CHORDS = [
+    { root: 0,  tones: [0, 3, 7] },
+    { root: 8,  tones: [0, 4, 7] },
+    { root: 3,  tones: [0, 4, 7] },
+    { root: 10, tones: [0, 4, 7] }
+  ];
+
+  const mtof = m => 440 * Math.pow(2, (m - 69) / 12);
+
+  function initAudio() {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    A.ac = new AC();
+
+    A.limiter = A.ac.createDynamicsCompressor();
+    A.limiter.threshold.value = -2; A.limiter.ratio.value = 20;
+    A.limiter.attack.value = 0.002; A.limiter.release.value = 0.1;
+    A.limiter.connect(A.ac.destination);
+
+    // Load-bearing (spec 4.3): road noise means high volume, so density
+    // changes must not startle.
+    A.comp = A.ac.createDynamicsCompressor();
+    A.comp.threshold.value = -18; A.comp.ratio.value = 3;
+    A.comp.attack.value = 0.01; A.comp.release.value = 0.25;
+    A.comp.connect(A.limiter);
+
+    A.lp = A.ac.createBiquadFilter();
+    A.lp.type = 'lowpass'; A.lp.frequency.value = 1200; A.lp.Q.value = 0.8;
+    A.lp.connect(A.comp);
+
+    A.master = A.ac.createGain();
+    A.master.gain.value = 0.8;
+    A.master.connect(A.lp);
+
+    A.panBus = A.ac.createStereoPanner ? A.ac.createStereoPanner() : A.ac.createGain();
+    A.panBus.connect(A.master);
+
+    A.drumBus = A.ac.createGain();
+    A.drumBus.connect(A.master);
+
+    // Silent buffer: the belt-and-braces iOS unlock.
+    const b = A.ac.createBuffer(1, 1, 22050);
+    const src = A.ac.createBufferSource();
+    src.buffer = b; src.connect(A.ac.destination); src.start(0);
   }
 
-  function trackPeaks() {
-    for (const ax of ['x', 'y', 'z']) {
-      const v = S.acc[ax], p = S.peak[ax];
-      if (v < p[0]) p[0] = v;
-      if (v > p[1]) p[1] = v;
+  function startAudio() {
+    if (A.running) return;
+    A.running = true;
+    A.nextTime = A.ac.currentTime + 0.1;
+    A.step = 0;
+    A.timer = setInterval(scheduler, TICK);
+  }
+
+  function scheduler() {
+    if (!A.ac || A.ac.state !== 'running') return;
+    while (A.nextTime < A.ac.currentTime + LOOKAHEAD) {
+      scheduleStep(A.step, A.nextTime);
+      // Tempo and feel changes land on bar lines only (spec 4.4).
+      if (A.step % 16 === 0) {
+        const d = A.pendingBpm - A.bpm;
+        A.bpm += Math.max(-4, Math.min(4, d));   // slew-limit +/-4 BPM per bar
+        A.feel = A.pendingFeel;
+      }
+      A.nextTime += 60 / A.bpm / 4;
+      A.step = (A.step + 1) % 128;
     }
   }
 
-  // Capture the peak of each excursion, so the log shows what each axis did
-  // during one real braking/accelerating/cornering event.
-  function trackEvent(now) {
-    const { x, y, z } = S.acc;
-    const mag = Math.hypot(x, y, z);
+  // ---- voices ----------------------------------------------------
 
-    if (!S.ev.open && mag > EVENT_ON) {
-      S.ev.open = true;
-      S.ev.peakMag = mag;
-      S.ev.snap = { x, y, z, t: (now - S.t0) / 1000 };
-    } else if (S.ev.open) {
-      if (mag > S.ev.peakMag) {
-        S.ev.peakMag = mag;
-        S.ev.snap = { x, y, z, t: (now - S.t0) / 1000 };
-      }
-      if (mag < EVENT_OFF) {
-        S.ev.open = false;
-        S.events.unshift({ ...S.ev.snap, mag: S.ev.peakMag, gps: S.gps.speed });
-        if (S.events.length > 40) S.events.pop();
+  function env(node, t, a, d, peak) {
+    const g = node.gain;
+    g.cancelScheduledValues(t);
+    g.setValueAtTime(0.0001, t);
+    g.exponentialRampToValueAtTime(Math.max(0.0002, peak), t + a);
+    g.exponentialRampToValueAtTime(0.0001, t + a + d);
+  }
+
+  function kick(t, gain) {
+    const o = A.ac.createOscillator(), g = A.ac.createGain();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(120, t);
+    o.frequency.exponentialRampToValueAtTime(45, t + 0.09);
+    env(g, t, 0.002, 0.32, gain);
+    o.connect(g); g.connect(A.drumBus);
+    o.start(t); o.stop(t + 0.4);
+  }
+
+  function hat(t, gain, open) {
+    const dur = open ? 0.16 : 0.045;
+    const n = A.ac.createBufferSource();
+    const len = Math.ceil(A.ac.sampleRate * dur);
+    const buf = A.ac.createBuffer(1, len, A.ac.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+    n.buffer = buf;
+    const bp = A.ac.createBiquadFilter();
+    bp.type = 'highpass'; bp.frequency.value = 7000;
+    const g = A.ac.createGain();
+    env(g, t, 0.001, dur, gain);
+    n.connect(bp); bp.connect(g); g.connect(A.drumBus);
+    n.start(t); n.stop(t + dur + 0.02);
+  }
+
+  function bass(t, midi, dur, gain, attack) {
+    const o = A.ac.createOscillator(), g = A.ac.createGain(), f = A.ac.createBiquadFilter();
+    o.type = 'sawtooth';
+    o.frequency.value = mtof(midi);
+    f.type = 'lowpass'; f.Q.value = 6;
+    f.frequency.setValueAtTime(220, t);
+    f.frequency.exponentialRampToValueAtTime(900, t + 0.06);
+    f.frequency.exponentialRampToValueAtTime(200, t + dur);
+    env(g, t, attack, dur, gain);
+    o.connect(f); f.connect(g); g.connect(A.master);
+    o.start(t); o.stop(t + dur + 0.05);
+  }
+
+  function pluck(t, midi, dur, gain, type) {
+    const o = A.ac.createOscillator(), g = A.ac.createGain();
+    o.type = type || 'square';
+    o.frequency.value = mtof(midi);
+    env(g, t, 0.004, dur, gain);
+    o.connect(g); g.connect(A.panBus);
+    o.start(t); o.stop(t + dur + 0.05);
+  }
+
+  function lead(t, midi, dur, gain) {
+    const g = A.ac.createGain(), f = A.ac.createBiquadFilter();
+    f.type = 'lowpass'; f.frequency.value = 2600; f.Q.value = 2;
+    const lfo = A.ac.createOscillator(), lg = A.ac.createGain();
+    lfo.frequency.value = 5.2; lg.gain.value = 4;
+    lfo.connect(lg);
+    [0, 0.12].forEach(det => {
+      const o = A.ac.createOscillator();
+      o.type = 'sawtooth';
+      o.frequency.value = mtof(midi + det);
+      lg.connect(o.frequency);
+      o.connect(f); o.start(t); o.stop(t + dur + 0.2);
+    });
+    env(g, t, 0.08, dur, gain);
+    f.connect(g); g.connect(A.panBus);
+    lfo.start(t); lfo.stop(t + dur + 0.2);
+  }
+
+  // Pad is the one voice that never stops — it carries the rest state.
+  let padNodes = null;
+  function padChord(t, chord, dur) {
+    if (padNodes) {
+      try {
+        padNodes.g.gain.cancelScheduledValues(t);
+        padNodes.g.gain.setTargetAtTime(0.0001, t, 0.5);
+        padNodes.osc.forEach(o => o.stop(t + 2.5));
+      } catch (e) { /* already stopped */ }
+    }
+    const g = A.ac.createGain(), f = A.ac.createBiquadFilter();
+    f.type = 'lowpass'; f.Q.value = 1.5;
+    f.frequency.setValueAtTime(500, t);
+    f.frequency.linearRampToValueAtTime(1800, t + dur * 0.6);
+    f.frequency.linearRampToValueAtTime(700, t + dur);
+    const osc = [];
+    chord.tones.forEach(tn => {
+      [-0.08, 0.08].forEach(det => {
+        const o = A.ac.createOscillator();
+        o.type = 'sawtooth';
+        o.frequency.value = mtof(ROOT + 12 + chord.root + tn + det);
+        o.connect(f); o.start(t); o.stop(t + dur + 3);
+        osc.push(o);
+      });
+    });
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.10, t + 0.8);
+    f.connect(g); g.connect(A.panBus);
+    padNodes = { g, osc };
+  }
+
+  // ---- the pattern ------------------------------------------------
+
+  function scheduleStep(step, t) {
+    const bar = Math.floor(step / 16);
+    const s16 = step % 16;
+    const chord = CHORDS[Math.floor(bar / 2) % 4];
+    const scale = SCALES[A.scale];
+
+    // Pad: new chord every 2 bars, always present.
+    if (s16 === 0 && bar % 2 === 0) {
+      padChord(t, chord, (60 / A.bpm) * 4 * 2);
+    }
+
+    // `band` is how much of the full arrangement is audible. At rest it
+    // goes to 0 and only the pad survives.
+    const band = 1 - A.rest;
+    if (band < 0.02) return;
+
+    const D = DS;                     // current DriveState
+    const intensity = D.intensity;
+    const attack = 0.04 - 0.038 * Math.min(1, D.jerk / 12);
+
+    // Kick
+    const kickOn =
+      A.feel === 'half'     ? (s16 % 8 === 0)
+      : A.feel === 'double' ? (s16 % 2 === 0)
+      :                       (s16 % 4 === 0);
+    if (kickOn) kick(t, 0.85 * band);
+
+    // Hats: appear at straight feel and above
+    if (A.feel !== 'half') {
+      const hatEvery = A.feel === 'double' ? 1 : 2;
+      if (s16 % hatEvery === 0 && s16 % 4 !== 0) {
+        hat(t, (0.10 + 0.14 * intensity) * band, s16 % 8 === 6);
       }
     }
+
+    // Bass: root, denser with intensity
+    const bassEvery = A.feel === 'half' ? 8 : intensity > 0.5 ? 2 : 4;
+    if (s16 % bassEvery === 0) {
+      const oct = (s16 % 8 === 0) ? 0 : 12;
+      bass(t, ROOT - 12 + chord.root + (oct === 0 ? 0 : 0),
+           (60 / A.bpm / 4) * (bassEvery * 0.85), 0.30 * band, attack);
+    }
+
+    // Arp: aggression > 0.4
+    if (D.aggression > 0.4 && s16 % 2 === 1) {
+      const idx = (step * 3) % scale.length;
+      const oc = ((step >> 2) % 2) * 12;
+      pluck(t, ROOT + 12 + chord.root + scale[idx] + oc,
+            60 / A.bpm / 4 * 1.4, 0.085 * band * (0.5 + intensity * 0.5));
+    }
+
+    // Lead: aggression > 0.7, sparse long notes
+    if (D.aggression > 0.7 && s16 === 0 && bar % 2 === 1) {
+      const idx = (bar * 2) % scale.length;
+      lead(t, ROOT + 24 + chord.root + scale[idx], (60 / A.bpm) * 3, 0.07 * band);
+    }
   }
+
+  // ---- continuous parameter mapping (M5) ---------------------------
+
+  function applyMapping() {
+    if (!A.ac || !A.running) return;
+    const t = A.ac.currentTime, D = DS;
+
+    // Tempo from speed; falls back to aggression when GPS is unavailable.
+    const spd = (D.speed !== null && D.speed !== undefined)
+      ? Math.min(1, D.speed / 33)          // 0..1 over 0..120 km/h
+      : D.aggression;
+    A.pendingBpm = 104 + 28 * spd;
+
+    // Feel carries the big energy jumps, not BPM (spec 4.4).
+    const energy = 0.6 * spd + 0.4 * D.aggression;
+    const cur = A.pendingFeel;
+    if (energy < (cur === 'half' ? 0.22 : 0.16)) A.pendingFeel = 'half';
+    else if (energy > (cur === 'double' ? 0.58 : 0.68)) A.pendingFeel = 'double';
+    else A.pendingFeel = 'straight';
+
+    // Scale from aggression, with hysteresis.
+    const ag = D.aggression;
+    if (A.scale === 'minor' && ag > 0.38) A.scale = 'pentatonic';
+    else if (A.scale === 'pentatonic' && ag < 0.32) A.scale = 'minor';
+    else if (A.scale === 'pentatonic' && ag > 0.73) A.scale = 'phrygian';
+    else if (A.scale === 'phrygian' && ag < 0.67) A.scale = 'pentatonic';
+
+    // Master cutoff: exponential, dipped by braking.
+    const base = 600 * Math.pow(26, D.intensity);
+    const dip = 1 - 0.55 * D.brake;
+    A.lp.frequency.setTargetAtTime(Math.max(300, base * dip), t, 0.12);
+
+    // Cornering pans; it does not transpose.
+    if (A.panBus.pan) A.panBus.pan.setTargetAtTime(
+      Math.max(-0.7, Math.min(0.7, D.aLat / 6)), t, 0.25);
+
+    // Rest: fade to pad alone over ~4s, rejoin handled on bar lines.
+    A.restTarget = D.stationary ? 1 : 0;
+    A.rest += (A.restTarget - A.rest) * 0.03;
+  }
+
+  // ---------- start ----------
+  $('startBtn').addEventListener('click', async () => {
+    if (S.started) return;
+    const err = $('startErr'); err.hidden = true;
+    try {
+      // Audio must be created inside the gesture on iOS — do it first, so a
+      // motion-permission denial cannot cost us the unlock.
+      initAudio();
+      if (A.ac.state === 'suspended') await A.ac.resume();
+
+      if (typeof DeviceMotionEvent !== 'undefined' &&
+          typeof DeviceMotionEvent.requestPermission === 'function') {
+        const st = await DeviceMotionEvent.requestPermission();
+        if (st !== 'granted') {
+          err.textContent = 'Motion access denied. Reload and tap Start to retry.';
+          err.hidden = false; return;
+        }
+      }
+      window.addEventListener('devicemotion', onMotion);
+      startGeo();
+      requestWakeLock();
+
+      S.started = true; S.t0 = performance.now();
+      $('start').hidden = true; $('main').hidden = false;
+      updateSignLabel();
+
+      startAudio();
+      setInterval(applyMapping, 100);
+      setInterval(render, 80);
+
+      setTimeout(() => { if (S.count === 0) $('noMotion').hidden = false; }, 1500);
+      setTimeout(() => {
+        if (A.ac.state !== 'running') {
+          $('audioWarn').textContent =
+            'Audio is not running (state: ' + A.ac.state + '). Check the silent switch, then tap the screen.';
+          $('audioWarn').hidden = false;
+        }
+      }, 1200);
+    } catch (e) {
+      err.textContent = 'Could not start: ' + (e && e.message ? e.message : e) +
+        (location.protocol !== 'https:' && location.hostname !== 'localhost'
+          ? ' — this page is not on HTTPS, which iOS requires for motion access.' : '');
+      err.hidden = false;
+    }
+  });
+
+  // A tap anywhere recovers audio after a call or interruption.
+  document.addEventListener('touchend', () => {
+    if (A.ac && A.ac.state === 'suspended') A.ac.resume().then(() => { $('audioWarn').hidden = true; });
+  });
 
   // ---------- GPS ----------
-  let geoWatch = null;
   function startGeo() {
     if (!navigator.geolocation) { S.gps.status = 'unsupported'; return; }
-    S.gps.status = 'acquiring…';
-    geoWatch = navigator.geolocation.watchPosition(
-      pos => {
-        S.gps.status = 'ok';
-        S.gps.speed = pos.coords.speed;
-        S.gps.heading = pos.coords.heading;
-        S.gps.acc = pos.coords.accuracy;
-        S.gps.n++;
-        S.dirty = true;
-      },
-      err => { S.gps.status = 'error: ' + err.message; S.dirty = true; },
-      { enableHighAccuracy: true, maximumAge: 1000, timeout: 15000 }
-    );
+    S.gps.status = 'acquiring';
+    navigator.geolocation.watchPosition(
+      p => { S.gps.status='ok'; S.gps.speed = p.coords.speed; },
+      e => { S.gps.status='error'; },
+      { enableHighAccuracy:true, maximumAge:1000, timeout:15000 });
   }
 
   // ---------- wake lock ----------
   let wakeLock = null;
   async function requestWakeLock() {
-    if (!('wakeLock' in navigator)) { $('wl').textContent = 'unsupported'; return; }
-    try {
-      wakeLock = await navigator.wakeLock.request('screen');
-      $('wl').textContent = 'held';
-      wakeLock.addEventListener('release', () => { $('wl').textContent = 'released'; });
-    } catch (e) {
-      $('wl').textContent = 'failed';
-    }
+    if (!('wakeLock' in navigator)) return;
+    try { wakeLock = await navigator.wakeLock.request('screen'); } catch(e) {}
   }
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && S.started) requestWakeLock();
+    if (document.visibilityState === 'visible' && S.started) {
+      requestWakeLock();
+      if (A.ac && A.ac.state === 'suspended') A.ac.resume();
+    }
   });
 
-  // ---------- buttons ----------
-  $('resetPk').addEventListener('click', () => {
-    for (const ax of ['x', 'y', 'z']) S.peak[ax] = [S.acc[ax], S.acc[ax]];
-    S.dirty = true;
+  // ---------- controls ----------
+  $('vol').addEventListener('input', e => {
+    if (A.master) A.master.gain.setTargetAtTime(e.target.value/125, A.ac.currentTime, 0.05);
   });
-  $('clearEv').addEventListener('click', () => { S.events = []; S.dirty = true; });
+  function updateSignLabel() {
+    $('signState').textContent =
+      'forward = ' + (CFG.signFwd>0?'+':'-') + 'y, lateral = ' + (CFG.signLat>0?'+':'-') + 'x';
+  }
+  $('flipFwd').addEventListener('click', () => {
+    CFG.signFwd *= -1; localStorage.setItem('db.signFwd', CFG.signFwd); updateSignLabel();
+  });
+  $('flipLat').addEventListener('click', () => {
+    CFG.signLat *= -1; localStorage.setItem('db.signLat', CFG.signLat); updateSignLabel();
+  });
 
-  // ---------- render (throttled to ~12Hz; 60Hz DOM writes are wasted) ----------
-  let lastRender = 0;
-  function render(ts) {
-    requestAnimationFrame(render);
-    if (ts - lastRender < 80) return;
-    lastRender = ts;
+  // ---------- render ----------
+  function render() {
+    $('n-feel').textContent = DS.stationary ? 'at rest' : A.feel;
+    $('n-meta').textContent =
+      Math.round(A.bpm) + ' bpm · ' + A.scale +
+      (DS.brake > 0.15 ? ' · braking' : DS.accel > 0.15 ? ' · pulling' : '');
+    $('n-meter').style.width = (DS.intensity*100).toFixed(0) + '%';
 
-    // elapsed always ticks
-    const secs = Math.floor((performance.now() - S.t0) / 1000);
-    $('elapsed').textContent = Math.floor(secs / 60) + ':' + String(secs % 60).padStart(2, '0');
-
-    if (!S.dirty) return;
-    S.dirty = false;
-
-    // axes
-    for (const ax of ['x', 'y', 'z']) {
-      const v = S.acc[ax];
-      $('val-' + ax).textContent = fmt(v);
-      $('val-' + ax).className = 'val ' + (v > 0.4 ? 'pos' : v < -0.4 ? 'neg' : '');
-
-      const bar = $('bar-' + ax);
-      const fill = bar.querySelector('.fill');
-      const frac = clamp(v / BAR_SCALE, -1, 1);
-      const pct = Math.abs(frac) * 50;
+    const pairs = [['l', DS.aLong], ['t', DS.aLat]];
+    for (const [k,v] of pairs) {
+      $('val-'+k).textContent = fmt(v);
+      $('val-'+k).className = 'val ' + (v>0.4?'pos':v<-0.4?'neg':'');
+      const fill = $('bar-'+k).querySelector('.fill');
+      const frac = clamp(v/8,-1,1), pct = Math.abs(frac)*50;
       fill.style.width = pct + '%';
-      fill.style.left = frac >= 0 ? '50%' : (50 - pct) + '%';
-      fill.style.background = frac >= 0 ? 'var(--pos)' : 'var(--neg)';
-
-      const [mn, mx] = S.peak[ax];
-      bar.querySelector('.pk.lo').style.left = (50 + clamp(mn / BAR_SCALE, -1, 1) * 50) + '%';
-      bar.querySelector('.pk.hi').style.left = (50 + clamp(mx / BAR_SCALE, -1, 1) * 50) + '%';
-      $('pk-' + ax).textContent = fmt(mn) + ' / ' + fmt(mx);
+      fill.style.left = frac>=0 ? '50%' : (50-pct) + '%';
+      fill.style.background = frac>=0 ? 'var(--pos)' : 'var(--neg)';
     }
 
-    // gravity + mount
-    const g = S.grav;
-    const gm = Math.hypot(g.x, g.y, g.z);
-    $('g-vec').textContent = `${fmt(g.x, 1)}, ${fmt(g.y, 1)}, ${fmt(g.z, 1)}`;
-    $('g-mag').textContent = fmt(gm) + ' m/s²';
+    $('d-int').textContent  = fmt(DS.intensity);
+    $('d-agg').textContent  = fmt(DS.aggression);
+    $('d-spd').textContent  = DS.speed==null ? '— (' + S.gps.status + ')'
+                              : fmt(DS.speed*3.6,0) + ' km/h';
+    $('d-stat').textContent = DS.stationary ? 'yes' : 'no';
+    $('d-rate').textContent = S.rate ? fmt(S.rate,0)+' Hz' : '—';
 
-    if (S.gravInit && gm > 1) {
-      const deg = r => r * 180 / Math.PI;
+    if (S.gravInit) {
+      const g = S.grav, deg = r => r*180/Math.PI;
       const pitch = deg(Math.atan2(g.y, Math.abs(g.z)));
       const roll  = deg(Math.atan2(g.x, Math.abs(g.z)));
-      $('g-pitch').textContent = fmt(Math.abs(pitch), 1) + '°';
-      $('g-roll').textContent  = fmt(roll, 1) + '°';
-
-      const abs = { x: Math.abs(g.x), y: Math.abs(g.y), z: Math.abs(g.z) };
-      const dom = abs.z >= abs.x && abs.z >= abs.y ? 'z' : abs.y >= abs.x ? 'y' : 'x';
-      $('g-dom').textContent = dom + ' (' + fmt(g[dom], 1) + ')';
-      // The Safari sign convention is the unknown M1 exists to resolve, so
-      // report what was measured rather than asserting which way is up.
-      $('g-face').textContent = dom === 'z'
-        ? (g.z > 0 ? 'flat, g.z positive' : 'flat, g.z negative')
-        : 'not flat — upright?';
-
+      $('d-tilt').textContent = fmt(Math.abs(pitch),0)+'° / '+fmt(roll,0)+'°';
+      const abs = {x:Math.abs(g.x),y:Math.abs(g.y),z:Math.abs(g.z)};
+      const dom = abs.z>=abs.x && abs.z>=abs.y ? 'z' : abs.y>=abs.x ? 'y' : 'x';
       const bad = [];
-      if (dom !== 'z') bad.push('phone is not lying flat (gravity is strongest on ' + dom + ', expected z)');
-      if (Math.abs(roll) > 15) bad.push('rolled ' + fmt(roll, 0) + '° to one side');
-      if (Math.abs(pitch) > 40) bad.push('pitched ' + fmt(Math.abs(pitch), 0) + '°, steeper than expected');
+      if (dom !== 'z') bad.push('phone is not lying flat');
+      if (Math.abs(roll) > 15) bad.push('rolled ' + fmt(roll,0) + '° to one side');
       const mw = $('mountWarn');
-      if (bad.length) {
-        mw.innerHTML = '<strong>Mount looks wrong:</strong> ' + bad.join('; ') +
-          '. Readings will still be shown, but the forward axis assumption may not hold.';
-        mw.hidden = false;
-      } else {
-        mw.hidden = true;
-      }
+      if (bad.length) { mw.textContent = 'Mount: ' + bad.join('; ') + '. Forward axis may be wrong.'; mw.hidden = false; }
+      else mw.hidden = true;
     }
-
-    // sampling
-    $('s-rate').textContent  = S.rate ? fmt(S.rate, 1) + ' Hz' : '—';
-    $('s-int').textContent   = S.interval !== null ? fmt(S.interval * 1000, 1) + ' ms' : '—';
-    $('s-count').textContent = S.count;
-    $('s-drop').textContent  = S.dropped;
-    $('s-rot').textContent   = S.rot && S.rot.alpha !== null
-      ? `${fmt(S.rot.alpha, 0)}, ${fmt(S.rot.beta, 0)}, ${fmt(S.rot.gamma, 0)} °/s` : '—';
-
-    // gps
-    $('gp-stat').innerHTML = S.gps.status === 'ok'
-      ? '<span class="pill ok">ok</span>'
-      : '<span class="pill bad">' + S.gps.status + '</span>';
-    $('gp-speed').textContent = S.gps.speed === null || S.gps.speed === undefined
-      ? '—' : fmt(S.gps.speed, 1) + ' m/s  (' + fmt(S.gps.speed * 3.6, 0) + ' km/h)';
-    $('gp-head').textContent = S.gps.heading === null || S.gps.heading === undefined
-      ? '—' : fmt(S.gps.heading, 0) + '°';
-    $('gp-acc').textContent = S.gps.acc === null || S.gps.acc === undefined
-      ? '—' : '±' + fmt(S.gps.acc, 0) + ' m';
-    $('gp-n').textContent = S.gps.n;
-
-    renderEvents();
-  }
-
-  function renderEvents() {
-    const el = $('events');
-    if (!S.events.length) {
-      el.innerHTML = '<p class="empty">Nothing yet. Brake firmly once, then accelerate firmly once, then take a right turn.</p>';
-      return;
-    }
-    el.innerHTML = S.events.map(ev => {
-      // Bold the dominant axis — that is the tell for which axis maps to what.
-      const a = { x: ev.x, y: ev.y, z: ev.z };
-      const dom = Object.keys(a).reduce((m, k) => Math.abs(a[k]) > Math.abs(a[m]) ? k : m, 'x');
-      const parts = ['x', 'y', 'z'].map(k => {
-        const cls = a[k] > 0.4 ? 'pos' : a[k] < -0.4 ? 'neg' : '';
-        const txt = `${k} ${a[k] >= 0 ? '+' : ''}${fmt(a[k], 1)}`;
-        return k === dom ? `<b class="${cls}">${txt}</b>` : `<span class="${cls}">${txt}</span>`;
-      }).join('  ');
-      const spd = (ev.gps !== null && ev.gps !== undefined) ? `  @ ${fmt(ev.gps * 3.6, 0)}km/h` : '';
-      const mm = Math.floor(ev.t / 60), ss = String(Math.floor(ev.t % 60)).padStart(2, '0');
-      return `<div class="ev"><span class="t">${mm}:${ss}</span><span class="d">${parts}${spd}</span></div>`;
-    }).join('');
   }
 })();
 </script>
