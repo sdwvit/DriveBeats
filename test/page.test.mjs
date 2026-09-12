@@ -43,17 +43,27 @@ test('the modules load without throwing, with their listeners attached', () => {
     .filter(l => !/^import[\s{]/.test(l) && !/^export\s*{/.test(l))
     .join('\n')).join('\n');
 
+  return loadPage(script);
+});
+
+/** Run the concatenated modules in one sandbox and hand back what they wired. */
+function loadPage(script, over = {}) {
   const listeners = [];
-  const el = () => new Proxy({
-    style: {}, classList: { add() {}, remove() {}, toggle() {} },
-    addEventListener: (ev) => listeners.push(ev),
-    querySelectorAll: () => [],
-    hidden: false, textContent: '', innerHTML: '', value: '', dataset: {},
-    click() {},
-  }, {
-    get: (t, k) => (k in t ? t[k] : ''),
-    set: (t, k, v) => (t[k] = v, true),
-  });
+  const el = () => {
+    const handlers = {};
+    return new Proxy({
+      style: {}, classList: { add() {}, remove() {}, toggle() {} },
+      addEventListener: (ev, fn) => { listeners.push(ev); (handlers[ev] ||= []).push(fn); },
+      // So a test can press the button rather than only count that it exists.
+      fire: (ev, arg) => (handlers[ev] || []).map(fn => fn(arg)),
+      querySelectorAll: () => [],
+      hidden: false, textContent: '', innerHTML: '', value: '', dataset: {},
+      click() {},
+    }, {
+      get: (t, k) => (k in t ? t[k] : ''),
+      set: (t, k, v) => (t[k] = v, true),
+    });
+  };
 
   const nodes = new Map();
   const sandbox = {
@@ -73,6 +83,7 @@ test('the modules load without throwing, with their listeners attached', () => {
     setInterval: () => 0,
     setTimeout: () => 0,
     location: { protocol: 'https:', hostname: 'localhost' },
+    ...over,
   };
   sandbox.window = sandbox;
 
@@ -84,4 +95,91 @@ test('the modules load without throwing, with their listeners attached', () => {
   // dead end on the phone.
   assert.ok(listeners.filter(e => e === 'click').length >= 5, 'click handlers attached');
   assert.ok(listeners.includes('change'), 'file inputs wired');
+  return { nodes, listeners, sandbox };
+}
+
+const PAGE = () => ORDER.map(n => fs.readFileSync(path.join(ROOT, 'js', n + '.js'), 'utf8')
+  .split('\n')
+  .filter(l => !/^import[\s{]/.test(l) && !/^export\s*{/.test(l))
+  .join('\n')).join('\n');
+
+// ---------------------------------------------------------------
+// the motion permission prompt
+// ---------------------------------------------------------------
+
+/**
+ * iOS treats a call as "in a user gesture" only while the click handler is
+ * still running synchronously. After its first await the gesture is spent and
+ * requestPermission() rejects with "requires a user gesture" instead of showing
+ * the dialog - which is what "it keeps saying it needs a gesture but never
+ * asks" looks like from the driver's seat. So: was it asked for before the
+ * handler yielded?
+ */
+function startWithFakeIOS(over = {}) {
+  const calls = [];
+  const audio = {
+    state: 'suspended',
+    resume: () => { calls.push('resume'); return Promise.resolve(); },
+    suspend: () => Promise.resolve(),
+    currentTime: 0, sampleRate: 48000,
+    destination: {},
+    createGain: () => node(['gain']), createOscillator: () => node(['frequency', 'detune']),
+    createBiquadFilter: () => node(['frequency', 'Q', 'gain']),
+    createStereoPanner: () => node(['pan']),
+    createDynamicsCompressor: () => node(['threshold', 'knee', 'ratio', 'attack', 'release']),
+    createBufferSource: () => node(['playbackRate']),
+    createBuffer: (c, n) => ({ getChannelData: () => new Float32Array(n) }),
+  };
+  function node(params) {
+    const o = { connect: () => {}, disconnect: () => {}, start: () => {}, stop: () => {}, type: '' };
+    for (const p of params) o[p] = { value: 0, setValueAtTime: () => {}, linearRampToValueAtTime: () => {},
+      exponentialRampToValueAtTime: () => {}, setTargetAtTime: () => {}, cancelScheduledValues: () => {} };
+    return o;
+  }
+
+  const { nodes } = loadPage(PAGE(), {
+    AudioContext: function () { return audio; },
+    DeviceMotionEvent: {
+      requestPermission: () => {
+        calls.push('requestPermission');
+        return over.deny ? Promise.resolve('denied')
+          : over.noGesture ? Promise.reject(Object.assign(new Error('requires a user gesture'), { name: 'NotAllowedError' }))
+          : Promise.resolve('granted');
+      },
+    },
+  });
+
+  const pending = nodes.get('startBtn').fire('click')[0];
+  // Read the moment the handler yields, before any promise is allowed to settle.
+  const beforeAwait = calls.slice();
+  return { calls, beforeAwait, pending, nodes };
+}
+
+test('motion permission is requested before the click handler yields', () => {
+  const { beforeAwait } = startWithFakeIOS();
+  assert.ok(beforeAwait.includes('requestPermission'),
+    'asked for after the first await - iOS will refuse it without prompting');
+});
+
+test('unlocking audio does not cost us the permission prompt', () => {
+  // Both want the same tap. Starting the resume and the permission request
+  // together, and awaiting afterwards, is what lets them share it.
+  const { beforeAwait } = startWithFakeIOS();
+  assert.ok(beforeAwait.includes('resume'), 'audio is unlocked in the gesture too');
+  assert.equal(beforeAwait.length, 2, 'and nothing else is waited on in between');
+});
+
+test('a refused prompt tells the driver what to do about it', async () => {
+  const { pending, nodes } = startWithFakeIOS({ noGesture: true });
+  await pending;
+  const err = nodes.get('startErr');
+  assert.equal(err.hidden, false, 'the failure is shown');
+  assert.match(err.textContent, /reload/i, 'and says how to recover');
+  assert.match(err.textContent, /Motion & Orientation/i, 'including the iOS setting');
+});
+
+test('a denied prompt is reported as a denial, not as a broken page', async () => {
+  const { pending, nodes } = startWithFakeIOS({ deny: true });
+  await pending;
+  assert.match(nodes.get('startErr').textContent, /denied/i);
 });

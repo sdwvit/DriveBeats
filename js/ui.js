@@ -14,19 +14,44 @@ import { $, clamp, fmt } from './util.js';
     if (S.started) return;
     const err = $('startErr'); err.hidden = true;
     try {
-      // Audio must be created inside the gesture on iOS — do it first, so a
-      // motion-permission denial cannot cost us the unlock.
+      // Everything that needs the tap must be ASKED FOR BEFORE THE FIRST AWAIT.
+      //
+      // iOS counts a call as "in a user gesture" only while the handler is
+      // still running synchronously. The moment it awaits, the gesture is
+      // spent, and DeviceMotionEvent.requestPermission() then rejects with
+      // "requires a user gesture" without ever showing the dialog - so the page
+      // reports a permission problem that the driver is given no way to answer.
+      //
+      // This used to work by luck: the await above it only ran when the fresh
+      // AudioContext came up suspended, which depends on the iOS version and on
+      // whether audio had been unlocked already. When it came up running, the
+      // await was skipped and the prompt appeared.
+      //
+      // So: construct the context, start both requests, and only then await.
       const AC = window.AudioContext || window.webkitAudioContext;
       initAudio(new AC());
-      if (A.ac.state === 'suspended') await A.ac.resume();
+      const unlock = A.ac.state === 'suspended' ? A.ac.resume() : Promise.resolve();
+      const perm = (typeof DeviceMotionEvent !== 'undefined' &&
+                    typeof DeviceMotionEvent.requestPermission === 'function')
+        ? DeviceMotionEvent.requestPermission()
+        : Promise.resolve('granted');
 
-      if (typeof DeviceMotionEvent !== 'undefined' &&
-          typeof DeviceMotionEvent.requestPermission === 'function') {
-        const st = await DeviceMotionEvent.requestPermission();
-        if (st !== 'granted') {
-          err.textContent = 'Motion access denied. Reload and tap Start to retry.';
-          err.hidden = false; return;
-        }
+      await unlock;
+      let st;
+      try {
+        st = await perm;
+      } catch (pe) {
+        // The gesture was lost, or the page is not in a context iOS will ask
+        // from. Neither is something the driver can fix by tapping again.
+        err.textContent = 'iOS would not show the motion permission prompt. ' +
+          'Reload the page and tap Start as the first thing you do. If it keeps ' +
+          'happening, switch on Settings \u203a Apps \u203a Safari \u203a Motion & Orientation Access.';
+        err.hidden = false; return;
+      }
+      if (st !== 'granted') {
+        err.textContent = 'Motion access denied. Reload and tap Start to retry, ' +
+          'and check Settings \u203a Apps \u203a Safari \u203a Motion & Orientation Access is on.';
+        err.hidden = false; return;
       }
       window.addEventListener('devicemotion', onMotion);
       startGeo();
