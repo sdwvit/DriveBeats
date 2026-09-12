@@ -5,6 +5,7 @@
 
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
+import * as motion from '../js/motion.js';
 import { DS, S, CFG, onMotion } from '../js/motion.js';
 
 const HZ = 60, DT = 1000 / HZ;
@@ -21,16 +22,8 @@ function drive(seconds, { long = 0, lat = 0, gps = null } = {}) {
 }
 
 function reset() {
-  Object.assign(DS, {
-    speed: null, aLong: 0, aLat: 0, jerk: 0, intensity: 0, aggression: 0,
-    cornering: 0, accel: 0, brake: 0, stationary: true,
-  });
-  Object.assign(S, {
-    started: false, t0: 0, lastT: 0, count: 0, dropped: 0, rate: 0,
-    f: { x: 0, y: 0, z: 0 }, grav: { x: 0, y: 0, z: 0 }, gravInit: false,
-    prevLong: 0, stillSince: 0, gps: { speed: null, status: 'idle' }, _t: 0,
-  });
-  CFG.signFwd = 1; CFG.signLat = 1;
+  motion.resetMotion();
+  S._t = 0;
 }
 
 beforeEach(reset);

@@ -1,7 +1,7 @@
 import { A, applyMapping, initAudio, startAudio, toggleAudio } from './engine.js';
 import { M, ROLES, ROLE_LABELS, loadParsed, parseMidi, rebuildNotes } from './midi.js';
 import { clearMidi, deleteMidi, listMidi, loadMidiNamed, loadSavedMidi, resetStorage, saveMidi } from './midi-store.js';
-import { CFG, DS, S, loadConfig, onMotion } from './motion.js';
+import { CFG, DS, S, loadConfig, onFix, onMotion } from './motion.js';
 import { sfReset, sfSync } from './playback.js';
 import { SF, parseSf2 } from './sf2.js';
 import { $, clamp, fmt } from './util.js';
@@ -68,16 +68,49 @@ import { $, clamp, fmt } from './util.js';
   });
 
   // ---------- GPS ----------
+  // Metres between two fixes. Equirectangular rather than haversine: over the
+  // tens of metres between consecutive fixes the difference is millimetres, and
+  // this cannot go wrong at a pole we will never be driving past.
+  const R = 6371000;
+  function metres(a, b) {
+    const la = a.latitude * Math.PI / 180, lb = b.latitude * Math.PI / 180;
+    const x = (b.longitude - a.longitude) * Math.PI / 180 * Math.cos((la + lb) / 2);
+    const y = lb - la;
+    return Math.hypot(x, y) * R;
+  }
+
+  let lastFix = null;
   function startGeo() {
     if (!navigator.geolocation) { S.gps.status = 'unsupported'; return; }
     S.gps.status = 'acquiring';
     navigator.geolocation.watchPosition(
-      // coords.speed is documented as null when unknown, but real devices also
-      // hand back NaN. NaN survives every later arithmetic step and ends up in
-      // A.bpm, which poisons every note duration, so reject it at the door.
-      p => { S.gps.status='ok';
-             const sp = p.coords.speed;
-             S.gps.speed = (typeof sp === 'number' && isFinite(sp) && sp >= 0) ? sp : null; },
+      p => {
+        const c = p.coords, t = p.timestamp || Date.now();
+        // coords.speed is documented as null when unknown, but real devices
+        // also hand back NaN, and plenty of Android hardware never fills it in
+        // at all - which used to leave the speed ladder with nothing to work
+        // from for the whole drive. Where it is missing, the distance between
+        // this fix and the last one says the same thing.
+        let sp = c.speed;
+        if (!(typeof sp === 'number' && isFinite(sp) && sp >= 0)) sp = null;
+        if (sp === null && lastFix) {
+          const dt = (t - lastFix.t) / 1000;
+          // Under a third of a second is fix jitter, not travel; over ten and
+          // we have been in a tunnel and cannot say what happened in between.
+          if (dt > 0.3 && dt < 10) {
+            const d = metres(lastFix.c, c);
+            // A fix good to 20m cannot report a 3m crawl. Below its own
+            // accuracy the distance is noise, and integrating noise reads as
+            // motion while parked.
+            if (d > Math.max(3, (c.accuracy || 0) * 0.5)) sp = d / dt;
+            else sp = 0;
+          }
+        }
+        let hd = c.heading;
+        if (!(typeof hd === 'number' && isFinite(hd))) hd = null;
+        onFix({ speed: sp, heading: hd, t });
+        lastFix = { c: { latitude: c.latitude, longitude: c.longitude, accuracy: c.accuracy }, t };
+      },
       e => { S.gps.status='error'; },
       { enableHighAccuracy:true, maximumAge:1000, timeout:15000 });
   }
@@ -99,9 +132,14 @@ import { $, clamp, fmt } from './util.js';
   $('vol').addEventListener('input', e => {
     if (A.master) A.master.gain.setTargetAtTime(e.target.value/125, A.ac.currentTime, 0.05);
   });
+  // The axes are worked out from gravity and confirmed against GPS now, so
+  // these are an override rather than the setting they used to be. The label
+  // says whether one is in force, not which device axis is which.
   function updateSignLabel() {
-    $('signState').textContent =
-      'forward = ' + (CFG.signFwd>0?'+':'-') + 'y, lateral = ' + (CFG.signLat>0?'+':'-') + 'x';
+    const f = CFG.signFwd < 0, l = CFG.signLat < 0;
+    $('signState').textContent = (!f && !l)
+      ? 'Axes found automatically — flip only if it feels backwards'
+      : 'Overridden: ' + [f ? 'forward' : null, l ? 'lateral' : null].filter(Boolean).join(' and ') + ' reversed';
   }
   $('flipFwd').addEventListener('click', () => {
     CFG.signFwd *= -1; localStorage.setItem('db.signFwd', CFG.signFwd); updateSignLabel();
@@ -122,6 +160,19 @@ import { $, clamp, fmt } from './util.js';
 
   // ---------- MIDI UI ----------
   let lastBuf = null;
+
+  // Muting duplicate parts is off unless the driver asked for it, and the
+  // answer is remembered: it is a judgement about their own files, not
+  // something to re-decide on every load.
+  try { M.dedupe = localStorage.getItem('db.dedupe') === '1'; } catch (e) {}
+  $('dedupe').checked = M.dedupe;
+  $('dedupe').addEventListener('change', () => {
+    M.dedupe = $('dedupe').checked;
+    try { localStorage.setItem('db.dedupe', M.dedupe ? '1' : '0'); } catch (e) {}
+    // rebuildNotes keeps the playhead, so this does not restart the song.
+    rebuildNotes();
+    renderMidiUI();
+  });
   // null clears the line; a string shows it. Storage failures are not fatal -
   // the song plays either way - but they have to be visible, because the file
   // is gone on the next reload.
@@ -258,16 +309,28 @@ import { $, clamp, fmt } from './util.js';
   function renderMidiUI() {
     $('midiName').textContent = M.active ? M.name : 'Built-in generator';
     const box = $('midiTracks');
+    const dups = M.active ? M.tracks.filter(t => t.dupOf != null).length : 0;
+    // The checkbox only appears where it would do something; on a file with no
+    // copies in it, it is a control that does nothing and reads as broken.
+    $('dedupeRow').style.display = dups ? 'flex' : 'none';
+    $('dedupeCount').textContent = dups
+      ? '(' + dups + ' found — same notes as an earlier part)' : '';
     if (!M.active) { box.innerHTML = ''; return; }
-    box.innerHTML = M.tracks.map((t, i) =>
-      '<div style="display:grid;grid-template-columns:1fr 168px;gap:8px;align-items:center;margin-bottom:6px">' +
+    box.innerHTML = M.tracks.map((t, i) => {
+      // A muted duplicate still shows its layer: the driver can see what it
+      // would play, and unticking the box brings it straight back.
+      const off = M.dedupe && t.dupOf != null;
+      return '<div style="display:grid;grid-template-columns:1fr 168px;gap:8px;align-items:center;margin-bottom:6px' +
+      (off ? ';opacity:.45' : '') + '">' +
       '<span style="font-size:.8rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
-      t.name.replace(/[<>&]/g, '') + ' <span style="color:var(--dim)">(' + t.notes.length + ')</span></span>' +
+      t.name.replace(/[<>&]/g, '') + ' <span style="color:var(--dim)">(' + t.notes.length +
+      (off ? ', copy of ' + (t.dupOf + 1) : '') + ')</span></span>' +
       '<select data-t="' + i + '" style="font:inherit;font-size:.78rem;background:var(--panel-2);' +
       'color:var(--text);border:1px solid var(--line);border-radius:8px;padding:6px">' +
       ROLES.map(r => '<option value="' + r + '"' + (t.role === r ? ' selected' : '') + '>' +
         ROLE_LABELS[r] + '</option>').join('') +
-      '</select></div>').join('');
+      '</select></div>';
+    }).join('');
     // Which song these controls describe. Loading a file is asynchronous, so a
     // dropdown left open across a load would otherwise apply its role to the
     // track that now sits at that index in a different song.
@@ -307,7 +370,14 @@ import { $, clamp, fmt } from './util.js';
     $('d-int').textContent  = fmt(DS.intensity);
     $('d-agg').textContent  = fmt(DS.aggression);
     $('d-spd').textContent  = DS.speed==null ? '— (' + S.gps.status + ')'
-                              : fmt(DS.speed*3.6,0) + ' km/h';
+                              : fmt(DS.speed*3.6,0) + ' km/h' +
+                                (DS.speedSrc === 'dead' ? ' (estimated)' : '');
+    // Which way the car thinks forward is, and whether GPS has confirmed it.
+    $('d-calib').textContent = {
+      device:   'device axes (no gravity reading)',
+      assumed:  'from the mount, forward assumed',
+      learned:  'forward confirmed by GPS'
+    }[DS.calib] || DS.calib;
     $('d-stat').textContent = DS.stationary ? 'yes' : 'no';
     $('d-rate').textContent = S.rate ? fmt(S.rate,0)+' Hz' : '—';
 

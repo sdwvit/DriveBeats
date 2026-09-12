@@ -8,7 +8,7 @@ import { SF } from './sf2.js';
   // ============================================================
   const A = {
     ac: null, master: null, lp: null, comp: null, limiter: null,
-    panBus: null, drumBus: null,
+    panBus: null, drumBus: null, roleBus: null,
     running: false,
     bpm: 112, pendingBpm: 112,
     spd: 0, energy: 0,
@@ -41,6 +41,7 @@ import { SF } from './sf2.js';
   ];
 
   const mtof = m => 440 * Math.pow(2, (m - 69) / 12);
+  const clamp01 = v => Math.max(0, Math.min(1, isFinite(v) ? v : 1));
 
   // Everything audible hangs off A.master: the pan bus, the drum bus, and the
   // generated bass, which connects to it directly. That makes master the one
@@ -55,6 +56,34 @@ import { SF } from './sf2.js';
 
     A.drumBus = A.ac.createGain();
     A.drumBus.connect(A.master);
+
+    // A fixed place in the stereo field per layer. Every melodic part used to
+    // arrive at the same point in the middle, so a file with five of them
+    // playing at once was a single wide smear; spread out, the same notes
+    // separate into parts you can follow. The offsets are small - this is a
+    // phone on a mount, often heard over one speaker or through road noise, so
+    // anything wider reads as a fault rather than as width.
+    A.roleBus = {};
+    for (const r in ROLE_PAN) {
+      const g = A.ac.createGain();
+      if (A.ac.createStereoPanner) {
+        const p = A.ac.createStereoPanner();
+        p.pan.value = ROLE_PAN[r];
+        g.connect(p); p.connect(A.panBus);
+      } else {
+        g.connect(A.panBus);
+      }
+      A.roleBus[r] = g;
+    }
+  }
+
+  // Bass and drums stay dead centre: low end belongs in the middle, and a kick
+  // that wanders is the one thing a driver will notice as wrong.
+  const ROLE_PAN = { pad: -0.22, keys: 0.28, lead: -0.14 };
+
+  /** Where a layer's voices should land. Unknown layers go to the pan bus. */
+  function busFor(role) {
+    return (A.roleBus && A.roleBus[role]) || A.panBus;
   }
 
   // ---- cutting off whatever is currently sounding -----------------
@@ -238,7 +267,11 @@ import { SF } from './sf2.js';
     n.start(t); n.stop(t + dur + 0.02);
   }
 
-  function bass(t, midi, dur, gain, attack) {
+  // `bright` is 0..1, normally the note's velocity. A filter that opens with
+  // how hard the note was struck is most of what makes a synth sound played
+  // rather than triggered; at a flat cutoff every note has the same bite and
+  // the line sits still no matter what the music is doing.
+  function bass(t, midi, dur, gain, attack, bright = 1) {
     const o = A.ac.createOscillator(), g = A.ac.createGain(), f = A.ac.createBiquadFilter();
     o.type = 'sawtooth';
     o.frequency.value = mtof(midi);
@@ -248,14 +281,16 @@ import { SF } from './sf2.js';
     // times run backwards is not the filter envelope anyone intended.
     const life = env(g, t, attack, dur, gain);
     const peak = t + Math.min(0.06, life * 0.3);
+    const top = 420 + 1100 * clamp01(bright);
     f.frequency.setValueAtTime(220, t);
-    f.frequency.exponentialRampToValueAtTime(900, peak);
+    f.frequency.exponentialRampToValueAtTime(top, peak);
     f.frequency.exponentialRampToValueAtTime(200, t + life);
+    // Straight to master, not the pan bus: cornering must not swing the low end.
     o.connect(f); f.connect(g); g.connect(A.master);
     o.start(t); o.stop(t + life + 0.05);
   }
 
-  function pluck(t, midi, dur, gain, type) {
+  function pluck(t, midi, dur, gain, type, bright = 1) {
     const o = A.ac.createOscillator(), g = A.ac.createGain(), f = A.ac.createBiquadFilter();
     o.type = type || 'square';
     o.frequency.value = mtof(midi);
@@ -264,15 +299,17 @@ import { SF } from './sf2.js';
     // string instead, and keeps stacked keys parts from turning into buzz.
     f.type = 'lowpass'; f.Q.value = 1;
     const life = env(g, t, 0.004, dur, gain);
-    f.frequency.setValueAtTime(Math.min(9000, mtof(midi) * 7), t);
+    // A soft note opens to three harmonics, a hard one to eight.
+    const open = mtof(midi) * (3 + 5 * clamp01(bright));
+    f.frequency.setValueAtTime(Math.min(9000, open), t);
     f.frequency.exponentialRampToValueAtTime(Math.max(400, mtof(midi) * 2), t + life);
-    o.connect(f); f.connect(g); g.connect(A.panBus);
+    o.connect(f); f.connect(g); g.connect(busFor('keys'));
     o.start(t); o.stop(t + life + 0.05);
   }
 
-  function lead(t, midi, dur, gain) {
+  function lead(t, midi, dur, gain, bright = 1) {
     const g = A.ac.createGain(), f = A.ac.createBiquadFilter();
-    f.type = 'lowpass'; f.frequency.value = 2600; f.Q.value = 2;
+    f.type = 'lowpass'; f.frequency.value = 1500 + 2400 * clamp01(bright); f.Q.value = 2;
     const lfo = A.ac.createOscillator(), lg = A.ac.createGain();
     lfo.frequency.value = 5.2; lg.gain.value = 4;
     lfo.connect(lg);
@@ -284,7 +321,7 @@ import { SF } from './sf2.js';
       o.connect(f); o.start(t); o.stop(t + dur + 0.2);
     });
     env(g, t, 0.08, dur, gain);
-    f.connect(g); g.connect(A.panBus);
+    f.connect(g); g.connect(busFor('lead'));
     lfo.start(t); lfo.stop(t + dur + 0.2);
     // The oscillators above are stopped at t+dur+0.2, which is the tail env()
     // guarantees for a note this long; a lead note is never short enough for
@@ -321,7 +358,7 @@ import { SF } from './sf2.js';
     });
     g.gain.setValueAtTime(0.0001, t);
     g.gain.exponentialRampToValueAtTime(0.10, t + 0.8);
-    f.connect(g); g.connect(A.panBus);
+    f.connect(g); g.connect(busFor('pad'));
     padNodes = { g, osc };
   }
 
@@ -372,7 +409,8 @@ import { SF } from './sf2.js';
     if (s16 % bassEvery === 0) {
       const oct = (s16 % 8 === 0) ? 0 : 12;
       bass(t, ROOT - 12 + chord.root + (oct === 0 ? 0 : 0),
-           (60 / A.bpm / 4) * (bassEvery * 0.85), 0.30 * band, attack);
+           (60 / A.bpm / 4) * (bassEvery * 0.85), 0.30 * band, attack,
+           0.35 + 0.65 * intensity);
     }
 
     // Arp: from the 20 mph breakpoint.
@@ -380,13 +418,15 @@ import { SF } from './sf2.js';
       const idx = (step * 3) % scale.length;
       const oc = ((step >> 2) % 2) * 12;
       pluck(t, ROOT + 12 + chord.root + scale[idx] + oc,
-            60 / A.bpm / 4 * 1.4, 0.085 * band * (0.5 + intensity * 0.5));
+            60 / A.bpm / 4 * 1.4, 0.085 * band * (0.5 + intensity * 0.5),
+            null, 0.3 + 0.7 * intensity);
     }
 
     // Lead: from the 30 mph breakpoint, sparse long notes.
     if (A.tier >= 3 && s16 === 0 && bar % 2 === 1) {
       const idx = (bar * 2) % scale.length;
-      lead(t, ROOT + 24 + chord.root + scale[idx], (60 / A.bpm) * 3, 0.07 * band);
+      lead(t, ROOT + 24 + chord.root + scale[idx], (60 / A.bpm) * 3, 0.07 * band,
+           0.4 + 0.6 * intensity);
     }
   }
 
@@ -427,11 +467,16 @@ import { SF } from './sf2.js';
     if (A.panBus.pan) A.panBus.pan.setTargetAtTime(
       Math.max(-0.7, Math.min(0.7, D.aLat / 6)), t, 0.25);
 
-    // Rest: fade to pad alone over ~4s, rejoin handled on bar lines.
+    // Rest: the band comes back fast and leaves slowly. Pulling away from a
+    // junction should be answered within a second or so - at the old symmetric
+    // rate it took the better part of ten, by which point the driver is already
+    // up to speed and wondering why nothing happened - while a stop fades out
+    // gently rather than chopping the arrangement off at the lights.
     A.restTarget = D.stationary ? 1 : 0;
-    A.rest += (A.restTarget - A.rest) * 0.03;
+    const k = A.restTarget > A.rest ? 0.03 : 0.12;
+    A.rest += (A.restTarget - A.rest) * k;
 
     updateRoleGains();
   }
 
-export { A, CHORDS, CUT, LOOKAHEAD, MIN_TAIL, ROOT, SCALES, TICK, applyMapping, bass, buildBuses, env, hat, initAudio, kick, lead, mtof, padChord, padNodes, pluck, scheduleStep, scheduler, silenceAll, startAudio, stopAudio, toggleAudio };
+export { A, CHORDS, CUT, ROLE_PAN, busFor, LOOKAHEAD, MIN_TAIL, ROOT, SCALES, TICK, applyMapping, bass, buildBuses, env, hat, initAudio, kick, lead, mtof, padChord, padNodes, pluck, scheduleStep, scheduler, silenceAll, startAudio, stopAudio, toggleAudio };

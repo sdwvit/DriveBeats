@@ -1,4 +1,4 @@
-import { A, CHORDS, LOOKAHEAD, bass, env, hat, kick, lead, mtof, padChord, pluck } from './engine.js';
+import { A, CHORDS, LOOKAHEAD, bass, busFor, env, hat, kick, lead, mtof, padChord, pluck } from './engine.js';
 import { M } from './midi.js';
 import { DS } from './motion.js';
 import { MAX_SF_VOICES, SF, cachedZones, loadSamples, sfVoice } from './sf2.js';
@@ -28,10 +28,11 @@ import { MAX_SF_VOICES, SF, cachedZones, loadSamples, sfVoice } from './sf2.js';
   }
 
   // Sustained voice for MIDI pad tracks — this is what survives at rest.
-  function padNote(t, midi, dur, gain) {
+  function padNote(t, midi, dur, gain, bright = 1) {
     const g = A.ac.createGain(), f = A.ac.createBiquadFilter();
     f.type = 'lowpass'; f.Q.value = 1.2;
-    f.frequency.value = 400 + 1400 * (1 - A.rest);
+    // Opens with the drive (rest) and with how hard the note was written.
+    f.frequency.value = 300 + 1100 * (1 - A.rest) * (0.45 + 0.55 * bright);
     const osc = [];
     [-0.09, 0.09].forEach(det => {
       const o = A.ac.createOscillator();
@@ -44,7 +45,7 @@ import { MAX_SF_VOICES, SF, cachedZones, loadSamples, sfVoice } from './sf2.js';
     g.gain.exponentialRampToValueAtTime(Math.max(0.0002, gain), t + 0.35);
     g.gain.setValueAtTime(Math.max(0.0002, gain), t + Math.max(0.36, dur));
     g.gain.exponentialRampToValueAtTime(0.0001, t + dur + 1.0);
-    f.connect(g); g.connect(A.panBus);
+    f.connect(g); g.connect(busFor('pad'));
   }
 
   // General MIDI percussion map, reduced to the three voices we synthesize.
@@ -71,12 +72,17 @@ import { MAX_SF_VOICES, SF, cachedZones, loadSamples, sfVoice } from './sf2.js';
     // only handed back when the font has no zone for it at all.
     if (SF.ready && sfNote(n, t, dur, rg)) return;
 
+    // How hard the note was written, 0..1, which is what opens the filters.
+    // Without it every note in the file has the same timbre and a written
+    // crescendo is only a change in level.
+    const bright = n.vel / 127;
+
     switch (tr.role) {
       case 'drums': drumHit(n.midi, t, 0.85 * rg * vel); break;
-      case 'bass':  bass(t, n.midi, Math.min(dur, 1.2), 0.30 * rg * vel, attack); break;
-      case 'pad':   padNote(t, n.midi, Math.min(dur, 8), 0.055 * rg * vel); break;
-      case 'keys':  pluck(t, n.midi, Math.min(dur, 0.9), 0.085 * rg * vel); break;
-      case 'lead':  lead(t, n.midi, Math.min(dur, 4), 0.07 * rg * vel); break;
+      case 'bass':  bass(t, n.midi, Math.min(dur, 1.2), 0.30 * rg * vel, attack, bright); break;
+      case 'pad':   padNote(t, n.midi, Math.min(dur, 8), 0.055 * rg * vel, bright); break;
+      case 'keys':  pluck(t, n.midi, Math.min(dur, 0.9), 0.085 * rg * vel, null, bright); break;
+      case 'lead':  lead(t, n.midi, Math.min(dur, 4), 0.07 * rg * vel, bright); break;
     }
   }
 
@@ -281,4 +287,4 @@ import { MAX_SF_VOICES, SF, cachedZones, loadSamples, sfVoice } from './sf2.js';
     for (const k in tgt) M.roleGain[k] += (tgt[k] - M.roleGain[k]) * 0.08;
   }
 
-export { MAX_PER_ROLE, SF_GAIN, TIERS, drumHit, padNote, playMidiNote, schedulerMidi, sfChanged, sfNote, sfReset, sfSync, slewBpm, snare, thin, updateRoleGains };
+export { MAX_PER_ROLE, SF_GAIN, TIERS, TIER_HYST, speedMph, tierFor, drumHit, padNote, playMidiNote, schedulerMidi, sfChanged, sfNote, sfReset, sfSync, slewBpm, snare, thin, updateRoleGains };

@@ -87,7 +87,7 @@
   <div class="req">
     <h2>If it reacts backwards</h2>
     <ul>
-      <li>The iOS axis signs are not confirmed yet. If braking sounds like accelerating, tap <strong>Flip forward</strong> once — it is remembered.</li>
+      <li>The phone works out which way the car points from gravity, and confirms it against GPS on your first pull away — mount it any way you like. If braking still sounds like accelerating, tap <strong>Flip forward</strong> once; it is remembered.</li>
     </ul>
   </div>
   <button id="startBtn">Start Drive</button>
@@ -115,7 +115,7 @@
       <button id="flipFwd">Flip forward</button>
       <button id="flipLat">Flip lateral</button>
     </div>
-    <p class="hint" id="signState">forward = +y, lateral = +x</p>
+    <p class="hint" id="signState">Axes found automatically</p>
   </div>
 
   <div class="card">
@@ -128,6 +128,10 @@
     <input type="file" id="midiFile" accept=".mid,.midi,audio/midi,application/octet-stream" hidden>
     <p id="midiErr" class="hint" style="color:var(--neg)" hidden></p>
     <div id="midiLib" style="margin-top:10px"></div>
+    <label id="dedupeRow" style="display:none;align-items:center;gap:8px;margin-top:12px;font-size:.8rem">
+      <input type="checkbox" id="dedupe" style="width:18px;height:18px">
+      <span>Mute duplicate parts <span class="hint" id="dedupeCount"></span></span>
+    </label>
     <div id="midiTracks" style="margin-top:10px"></div>
     <p class="hint">Notes play as written, looping. Driving controls tempo, filter and
       which layers are audible. The pad layer keeps playing at rest.</p>
@@ -168,6 +172,7 @@
       <dt>intensity</dt><dd id="d-int">—</dd>
       <dt>aggression</dt><dd id="d-agg">—</dd>
       <dt>speed</dt><dd id="d-spd">—</dd>
+      <dt>car axes</dt><dd id="d-calib">—</dd>
       <dt>stationary</dt><dd id="d-stat">—</dd>
       <dt>sample rate</dt><dd id="d-rate">—</dd>
       <dt>pitch / roll</dt><dd id="d-tilt">—</dd>

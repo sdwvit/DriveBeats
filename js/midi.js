@@ -18,6 +18,10 @@ import { silenceAll } from './engine.js';
     // be recognised as belonging to the old song and dropped - otherwise it
     // muted whichever track happened to land on the same index.
     gen: 0,
+    // Opt-in: mute tracks that are note-for-note copies of an earlier one.
+    // Off by default, because the two cases are indistinguishable from the
+    // notes alone and one of them is a real part - see markDuplicates.
+    dedupe: false,
     roleGain: { drums: 0, bass: 0, pad: 1, lead: 0, keys: 0 }
   };
 
@@ -277,12 +281,49 @@ import { silenceAll } from './engine.js';
     });
   }
 
+  // Early-90s MIDIs routinely ship the same part twice.
+  //
+  // A file was expected to play on whatever sound card you had, so authors
+  // wrote alternate arrangements into one file and let the device pick: Descent
+  // 2's credits carries Slap Bass 1 and Synth Bass 1 playing identical notes,
+  // and two Electric Guitars doing the same. We play all of them, so those
+  // parts come out doubled and muddy.
+  //
+  // The trouble is that deliberate unison - two instruments thickening a line -
+  // looks exactly the same from the notes. So the match is exact: the same
+  // pitches at the same ticks for the same lengths, nothing approximate.
+  // Velocity is not compared, because an alternate arrangement is often mixed a
+  // little differently, and a difference there does not make it another part.
+  // Short tracks are left alone; two four-note stabs landing together are not
+  // evidence of anything.
+  const MIN_DUP_NOTES = 8;
+
+  function signature(t) {
+    let s = '';
+    for (const n of t.notes) s += n.midi + ':' + n.start + ':' + n.dur + ' ';
+    return s;
+  }
+
+  /** Marks each track with dupOf: the index of the earlier track it copies. */
+  function markDuplicates(tracks) {
+    const seen = new Map();
+    tracks.forEach((t, i) => {
+      t.dupOf = null;
+      if (t.notes.length < MIN_DUP_NOTES) return;
+      const sig = signature(t);
+      if (seen.has(sig)) t.dupOf = seen.get(sig);
+      else seen.set(sig, i);
+    });
+    return tracks.filter(t => t.dupOf != null).length;
+  }
+
   function loadParsed(parsed, name) {
     // The song that was playing a moment ago is still scheduled several
     // seconds out; without this the two arrangements overlap on every switch.
     silenceAll();
     M.tpq = parsed.tpq;
     M.tracks = parsed.tracks;
+    markDuplicates(M.tracks);
     assignRoles(M.tracks, M.tpq);
     rebuildNotes();
     M.name = name;
@@ -295,6 +336,7 @@ import { silenceAll } from './engine.js';
     M.notes = [];
     M.tracks.forEach((t, i) => {
       if (t.role === 'off') return;
+      if (M.dedupe && t.dupOf != null) return;
       t.notes.forEach(n => M.notes.push({ ...n, trackIdx: i }));
     });
     M.notes.sort((a, b) => a.start - b.start);
@@ -314,4 +356,4 @@ import { silenceAll } from './engine.js';
     while (M.idx < M.notes.length && M.notes[M.idx].start <= M.curTick) M.idx++;
   }
 
-export { CREDITS, GM, M, PART, ROLES, ROLE_LABELS, assignRoles, loadParsed, looksLikeCredits, parseMidi, rebuildNotes, trackLabel };
+export { CREDITS, GM, M, MIN_DUP_NOTES, PART, ROLES, ROLE_LABELS, assignRoles, loadParsed, looksLikeCredits, markDuplicates, parseMidi, rebuildNotes, signature, trackLabel };
