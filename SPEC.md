@@ -467,6 +467,102 @@ The file's own tempo map is deliberately ignored — tempo comes from driving.
 
 ---
 
+### 4.8 SoundFont (.sf2) playback
+
+A user-supplied SoundFont replaces the synthesized voices, so an uploaded MIDI
+file plays with real sampled instruments instead of the five built-in timbres.
+It is optional and layers on top of §4.7 — roles, gating and tempo are
+unchanged.
+
+**With a font loaded, roles gate volume only, not timbre.** The sample decides
+what a note sounds like; the role decides how loud that layer is. This is the
+whole point — otherwise a piano track routed to `bass` would still come out as
+a square-wave bass.
+
+#### The constraint that drives the design
+
+Decoding a whole 315 MB font into `Float32` audio buffers needs **619 MB**, and
+iOS Safari kills the tab well before that. Measured, per strategy:
+
+| Strategy | Float32 held in the browser |
+|---|---|
+| whole font | 619 MB — impossible |
+| every preset the file references | 36–48 MB |
+| **pruned to the zones actually triggered** | **3.7–30.8 MB** |
+
+So the font is **never held in memory**. Only the RIFF directory and the
+`pdta` (preset data) chunk are read up front — 0.24 MB even on the 315 MB
+font, which is why parsing it takes ~30 ms. Sample PCM is then sliced off disk
+with `File.slice()` for just the zones the loaded MIDI can reach.
+
+**Pruning keys on `(bank, program, key, velocity)` taken from the notes
+themselves**, not from the track's dominant program — a track can change
+program mid-song, and pruning has to match exactly what playback will later
+ask for or a note arrives with no sample loaded. Distinct pairs actually
+present are used rather than the key×velocity cross product, which
+over-selects badly on velocity-layered fonts.
+
+Reads are sorted by file offset and merged when less than 64 KB apart, turning
+~76 scattered slices into ~18. The loader yields to the event loop between
+runs so the progress bar paints and iOS does not see one long block.
+
+Samples are decoded into buffers created at the **context's** sample rate, with
+the difference folded into `playbackRate`, because `createBuffer` rejects some
+of the odd rates real fonts use. Loop points stay frame-exact either way.
+
+#### The voice
+
+Core fidelity only: sample, tuning, loop, volume envelope, pan. No SF2
+low-pass filter and no modulator matrix — both are audible refinements, not
+the difference between "sounds like the instrument" and "doesn't".
+
+| Element | Source |
+|---|---|
+| pitch | `2^(cents/1200)`, `cents = (key−root)·scaleTuning + coarse·100 + fine + correction` |
+| root key | `overridingRootKey` (gen 58) if set, else the sample header's |
+| loop | sample header, when `sampleModes` is 1 or 3 |
+| envelope | `*VolEnv` generators; timecents → `2^(tc/1200)` s |
+| level | `initialAttenuation` and `sustainVolEnv`, centibels → `10^(−cB/200)` |
+| pan | generator 17, ±500 → ±1 |
+
+**Preset generators are added to the instrument's, not substituted for them**
+(SF2 spec §9.4). Getting this backwards silently detunes and re-levels every
+layered preset.
+
+**`scaleTuning` (gen 56) is not optional.** Drum zones set it to 0 so that the
+key selects a sample without transposing it. Without it a snare mapped high up
+the keyboard plays back at 12× rate — which is exactly what the first
+implementation did.
+
+**`exclusiveClass` (gen 57)** cuts the previous note in the same class over
+12 ms. This is what stops an open hi-hat ringing through the closed one that
+follows it.
+
+Release is scheduled at note-off from the envelope's *actual* level at that
+instant, computed rather than assumed: notes are scheduled with a known
+duration, so a short note must release from mid-attack, not jump to the
+sustain level first. `cancelAndHoldAtTime` would express this directly but
+Safari does not have it.
+
+**Polyphony is capped at 64 voices.** Over the cap a note is dropped rather
+than handed back to the synth — a single note in a different timbre is more
+noticeable than a missing one. The cap is checked per note, not per zone, so a
+stereo sample (a left and a right zone) is never split in half; actual peak
+concurrency measures ~66.
+
+#### No persistence, deliberately
+
+Unlike the MIDI file, the font is **not** stored in IndexedDB and must be
+picked again each session. Storing tens to hundreds of MB in IndexedDB on a
+phone invites eviction and quota failures, and the `File` handle cannot be
+persisted anyway — the alternative would be re-reading the whole font into
+storage, which is the one thing this design exists to avoid.
+
+When no font is loaded, or when a note falls outside every zone in the font,
+playback falls back to the §4.7 synth voices with no interruption.
+
+---
+
 ## 5. iOS runtime constraints
 
 These are not edge cases; they will all happen on the first real drive.
@@ -529,6 +625,13 @@ can be revisited deliberately rather than drifted away from.
    session. See §4.6.
 6. **Uploaded MIDI: layers gated by driving**, parsed inline and remembered in
    IndexedDB. See §4.7.
+7. **SoundFont: optional, user-supplied, pruned, not persisted.** No font ships
+   with the app — it must work offline and a usable font is tens to hundreds of
+   MB. Only the zones the loaded MIDI actually triggers are read off disk, and
+   the font is re-picked each session. See §4.8.
+8. **SoundFont fidelity: samples, tuning, loops, envelopes, pan — no filter, no
+   modulators.** The excluded parts are refinements; the included parts are the
+   difference between sounding like the instrument and not. See §4.8.
 
 ---
 

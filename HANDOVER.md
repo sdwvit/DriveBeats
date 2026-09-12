@@ -13,46 +13,30 @@ nose-down. It reads the accelerometer and plays generative techno, or a
 user-uploaded MIDI file, shaped by how the car is being driven. **It works and
 the user has confirmed it sounds good.**
 
-## Your task: finish SoundFont support
+## State
 
-`wip/README.md` is the detailed brief. Summary:
+SoundFont (.sf2) support is **complete and merged** — parser, pruned sample
+loader, voice, routing and UI are all in `index.html`. The `wip/` folder is
+gone; nothing is outstanding from it. See SPEC §4.8 for the design and why
+each piece is the way it is.
 
-The SF2 directory parser (`wip/sf2-parser.js`) is written and tested against
-two real soundfonts, but has no playback layer and no UI. MIDI program/bank
-parsing is already done and merged into `index.html`.
+What it does: upload a .sf2 beside the MIDI file and notes play with real
+samples instead of the synth voices. Roles then gate volume only. No font
+ships with the app and the font is not persisted (re-pick each session) — both
+deliberate, see SPEC §7.7.
 
-Remaining work, in order:
+**Audio has still never been verified from tooling**, only by the user on the
+phone. The logic is tested (below) but nobody has heard the soundfont path.
+That is the first thing to ask the user to check.
 
-1. **Sample loading.** `file.slice()` each needed sample byte range out of the
-   .sf2, convert int16 -> Float32 `AudioBuffer` at the sample's own rate.
-   Needs a progress indicator — it is tens of MB.
-2. **The voice.** `AudioBufferSourceNode` + `playbackRate` from
-   `2^((key - rootKey + coarse + fine/100)/12)`; loop points from the sample
-   header when `sampleModes` is 1 or 3; volume envelope from the `*VolEnv`
-   generators (timecents -> `2^(tc/1200)` seconds; `sustainVolEnv` and
-   `initialAttenuation` are centibels -> `10^(-cB/200)`); pan from generator 17.
-3. **Routing.** `playMidiNote()` uses the soundfont when `SF.ready`, else the
-   existing synth voices. Roles then gate *volume only*, not timbre.
-4. **UI.** Upload button beside the MIDI one, progress, clear control.
+## The constraint that drives the soundfont design
 
-Settled decisions: **no built-in soundfont** (user uploads their own), **no
-persistence** for it (re-pick each session — the user chose this deliberately,
-unlike the MIDI file which *is* remembered in IndexedDB), and **core fidelity**
-(samples, loops, envelopes, pan — no SF2 filter, no modulator matrix).
-
-## The constraint that drives the whole design
-
-Decoding a whole 315MB soundfont into Float32 audio buffers needs **619 MB**.
-iOS Safari will kill the tab. Measured alternatives:
-
-| Strategy | Float32 in browser |
-|---|---|
-| whole font | 619 MB — impossible |
-| whole presets used | 36–48 MB |
-| pruned to keys/velocities actually played | **9.4–38.4 MB** |
-
-So resolve the zones each track actually triggers and slice only those samples.
-Never hold the whole font. `memtest.js` measures this for any font/MIDI pair.
+Decoding a whole 315MB font into Float32 buffers needs **619 MB** and iOS
+Safari will kill the tab. Pruning to the zones the loaded MIDI actually
+triggers brings it to 3.7–30.8 MB on the real test files. So the font is never
+held in memory — only the RIFF directory and the 0.24MB `pdta` chunk are read
+up front, and sample PCM is `File.slice()`d off disk per zone. Do not
+"simplify" this into loading the file.
 
 ## Test assets
 
@@ -61,16 +45,28 @@ Never hold the whole font. `memtest.js` measures this for any font/MIDI pair.
     /home/sdwvit/Downloads/map29.mid        format 1, 16 tracks, 11392 notes
     /home/sdwvit/Downloads/D_RUNNIN.mid     format 0, 9 channels, 4931 notes
 
-Use both MIDI files. They are different formats and each has already caught a
-real bug.
+Use both MIDI files against both fonts. They are different formats and each
+has already caught a real bug.
 
 ## How to verify
 
-There is no test suite. What has worked:
+There is no test suite. What has worked, and what found every bug so far:
 
-- **Logic in node.** Extract functions from `index.html` with a small python
-  slice and run them (see `wip/sf2test.js`, `wip/memtest.js`). This caught
-  every MIDI bug so far and is much faster than the browser.
+- **Logic in node.** Slice the functions out of `index.html` with a small
+  python script and run them against the real assets. Two harnesses were used
+  and are worth rebuilding if you touch this area:
+  - *Unit*: extract the SF block (from the `SOUNDFONT (SF2)` banner to the
+    `MIDI PLAYBACK` banner), stub `AudioContext`, then parse each font, prune
+    against each MIDI, and play every distinct `(bank, program, key, velocity)`
+    through the real `sfVoice`. Assert: no zone misses, `playbackRate` stays
+    in roughly 0.1–5, no `exponentialRampToValueAtTime` target ≤ 0, no
+    backwards event times, loop points inside the buffer.
+  - *Integration*: extract the entire `<script>` body, stub DOM + Web Audio,
+    append a `module.exports` before the closing `})();`, then drive
+    `schedulerMidi` over two full song lengths. Assert: loop wraps ≥ 2, voices
+    start, peak concurrency sits at the 64 cap. This is what caught the
+    `onended`-after-`stop` bug where the voice counter never came back down
+    and the cap silently swallowed every note after the 64th.
 - **Syntax.** Extract the `<script>` block and `node --check` it. The file is
   assembled by script, so a truncated write is a real risk — it happened once.
 - **Browser.** Chrome tools work but the window is often hidden, which pauses
@@ -92,12 +88,18 @@ There is no test suite. What has worked:
   fusion slowly re-attributes it to gravity (SPEC §3.2.2b). Layer gating
   therefore keys on speed as well as acceleration — do not "simplify" that back
   to acceleration alone, it empties the mix on a motorway.
+- In the soundfont voice, **preset generators add to instrument generators**,
+  they do not replace them (SF2 §9.4), and **`scaleTuning` (gen 56) must be
+  honoured** or drum samples transpose with the key and play back at ~12×.
+- Wire `src.onended` *before* `src.start()`/`src.stop()`. See above.
 - Do not add `Co-Authored-By` trailers to commits (user's global CLAUDE.md).
+
+## Ideas deliberately not done
+
+- SF2 low-pass filter and the modulator matrix (SPEC §4.8 — refinements).
+- 24-bit sample support (`sm24` chunk); 16-bit only.
+- Persisting the font. See SPEC §7.7 for why not.
 
 ## Git
 
-Branch `main`, clean, pushed. Recent:
-
-    d0f8e3f  Parse MIDI program/bank; add tested SF2 directory parser as WIP
-    (earlier) speed gating, role distribution, channel split, MIDI upload,
-             audio engine, M1 sensor readout
+Branch `main`.
