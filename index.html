@@ -116,6 +116,20 @@
   </div>
 
   <div class="card">
+    <h2>Music source</h2>
+    <p id="midiName" style="margin:0 0 10px;font-size:.9rem">Built-in generator</p>
+    <div class="row">
+      <button id="midiPick">Upload MIDI</button>
+      <button id="midiClear">Use built-in</button>
+    </div>
+    <input type="file" id="midiFile" accept=".mid,.midi,audio/midi,application/octet-stream" hidden>
+    <p id="midiErr" class="hint" style="color:var(--neg)" hidden></p>
+    <div id="midiTracks" style="margin-top:10px"></div>
+    <p class="hint">Notes play as written. Driving controls tempo, filter and which
+      layers are audible. The pad layer keeps playing at rest.</p>
+  </div>
+
+  <div class="card">
     <h2>Acceleration — m/s² (car frame)</h2>
     <div class="axis"><div class="name">fwd</div><div class="bar" id="bar-l"><div class="zero"></div><div class="fill"></div></div><div class="val" id="val-l">—</div></div>
     <div class="axis"><div class="name">lat</div><div class="bar" id="bar-t"><div class="zero"></div><div class="fill"></div></div><div class="val" id="val-t">—</div></div>
@@ -215,6 +229,309 @@
     DS.speed = S.gps.speed;
   }
   // ============================================================
+  //  MIDI — inline Standard MIDI File parser + IndexedDB store
+  // ============================================================
+  const M = {
+    active: false,
+    name: null,
+    tpq: 480,
+    lengthTicks: 0,
+    tracks: [],          // [{name, notes:[], role, avgPitch, isDrum}]
+    notes: [],           // flat, sorted by startTick, each carries trackIdx
+    idx: 0,
+    curTick: 0,
+    curTime: 0,
+    roleGain: { drums: 0, bass: 0, pad: 1, lead: 0, keys: 0 }
+  };
+
+  const ROLES = ['drums', 'bass', 'pad', 'keys', 'lead', 'off'];
+
+  // ---- parser ----------------------------------------------------
+  function parseMidi(buf) {
+    const v = new DataView(buf);
+    let p = 0;
+    const u32 = () => { const x = v.getUint32(p); p += 4; return x; };
+    const u16 = () => { const x = v.getUint16(p); p += 2; return x; };
+    const u8  = () => v.getUint8(p++);
+    const str = n => { let s = ''; for (let i = 0; i < n; i++) s += String.fromCharCode(u8()); return s; };
+    const vlq = () => {
+      let x = 0, b;
+      do { b = u8(); x = (x << 7) | (b & 0x7f); } while (b & 0x80);
+      return x;
+    };
+
+    if (str(4) !== 'MThd') throw new Error('Not a MIDI file (no MThd header).');
+    const hlen = u32();
+    u16();                                   // format
+    const ntrk = u16();
+    const div = u16();
+    p += hlen - 6;
+    if (div & 0x8000) throw new Error('SMPTE timecode MIDI files are not supported.');
+
+    const tracks = [];
+    for (let t = 0; t < ntrk; t++) {
+      if (p >= buf.byteLength) break;
+      if (str(4) !== 'MTrk') break;
+      const len = u32();
+      const end = p + len;
+      let tick = 0, running = 0;
+      const open = {};                       // key -> note being held
+      const notes = [];
+      let name = '';
+
+      while (p < end) {
+        tick += vlq();
+        let st = u8();
+        if (st < 0x80) { p--; st = running; } else running = st;
+        const type = st & 0xf0, ch = st & 0x0f;
+
+        if (st === 0xff) {                   // meta
+          const mt = u8(), ml = vlq();
+          if (mt === 0x03 && !name) { const q = p; name = str(ml); p = q + ml; }
+          else p += ml;
+        } else if (st === 0xf0 || st === 0xf7) {
+          p += vlq();
+        } else if (type === 0x90 || type === 0x80) {
+          const n = u8(), vel = u8();
+          const key = ch * 128 + n;
+          if (type === 0x90 && vel > 0) {
+            open[key] = { midi: n, vel, start: tick, ch };
+          } else if (open[key]) {
+            const o = open[key];
+            notes.push({ midi: o.midi, vel: o.vel, start: o.start,
+                         dur: Math.max(1, tick - o.start), ch: o.ch });
+            delete open[key];
+          }
+        } else if (type === 0xa0 || type === 0xb0 || type === 0xe0) { p += 2; }
+        else if (type === 0xc0 || type === 0xd0) { p += 1; }
+        else { p = end; }
+      }
+      p = end;
+
+      // Anything still held at end-of-track gets a nominal length.
+      for (const k in open) {
+        const o = open[k];
+        notes.push({ midi: o.midi, vel: o.vel, start: o.start, dur: div, ch: o.ch });
+      }
+      if (notes.length) {
+        notes.sort((a, b) => a.start - b.start);
+        const isDrum = notes.some(n => n.ch === 9);
+        const avg = notes.reduce((s, n) => s + n.midi, 0) / notes.length;
+        tracks.push({ name: name || ('Track ' + (tracks.length + 1)),
+                      notes, isDrum, avgPitch: avg, role: null });
+      }
+    }
+    if (!tracks.length) throw new Error('No notes found in that file.');
+    return { tpq: div, tracks };
+  }
+
+  // Guess a role per track so a file is usable without any fiddling.
+  function assignRoles(tracks) {
+    const melodic = tracks.filter(t => !t.isDrum).sort((a, b) => a.avgPitch - b.avgPitch);
+    tracks.forEach(t => { if (t.isDrum) t.role = 'drums'; });
+    if (melodic.length) {
+      melodic[0].role = 'bass';
+      if (melodic.length > 1) melodic[melodic.length - 1].role = 'lead';
+      // Longest average note in the middle becomes the pad — it carries the rest.
+      const mid = melodic.slice(1, -1);
+      if (mid.length) {
+        mid.sort((a, b) =>
+          (b.notes.reduce((s, n) => s + n.dur, 0) / b.notes.length) -
+          (a.notes.reduce((s, n) => s + n.dur, 0) / a.notes.length));
+        mid[0].role = 'pad';
+        mid.slice(1).forEach(t => t.role = 'keys');
+      } else if (melodic.length === 1) {
+        melodic[0].role = 'pad';
+      }
+    }
+    tracks.forEach(t => { if (!t.role) t.role = 'keys'; });
+  }
+
+  function loadParsed(parsed, name) {
+    M.tpq = parsed.tpq;
+    M.tracks = parsed.tracks;
+    assignRoles(M.tracks);
+    rebuildNotes();
+    M.name = name;
+    M.active = true;
+    M.idx = 0; M.curTick = 0; M.curTime = 0;
+  }
+
+  function rebuildNotes() {
+    M.notes = [];
+    M.tracks.forEach((t, i) => {
+      if (t.role === 'off') return;
+      t.notes.forEach(n => M.notes.push({ ...n, trackIdx: i }));
+    });
+    M.notes.sort((a, b) => a.start - b.start);
+    M.lengthTicks = M.notes.length
+      ? Math.max(...M.notes.map(n => n.start + n.dur)) : M.tpq * 4;
+    // Round the loop out to a whole bar so it rejoins the grid cleanly.
+    const bar = M.tpq * 4;
+    M.lengthTicks = Math.ceil(M.lengthTicks / bar) * bar;
+    M.idx = 0; M.curTick = 0;
+  }
+
+  // ---- IndexedDB -------------------------------------------------
+  function idb() {
+    return new Promise((res, rej) => {
+      const r = indexedDB.open('drivebeats', 1);
+      r.onupgradeneeded = () => r.result.createObjectStore('files');
+      r.onsuccess = () => res(r.result);
+      r.onerror = () => rej(r.error);
+    });
+  }
+  async function saveMidi(name, buf, roles) {
+    try {
+      const db = await idb();
+      await new Promise((res, rej) => {
+        const tx = db.transaction('files', 'readwrite');
+        tx.objectStore('files').put({ name, buf, roles }, 'current');
+        tx.oncomplete = res; tx.onerror = () => rej(tx.error);
+      });
+    } catch (e) { /* private mode / quota - not fatal */ }
+  }
+  async function loadSavedMidi() {
+    try {
+      const db = await idb();
+      const rec = await new Promise((res, rej) => {
+        const tx = db.transaction('files', 'readonly');
+        const q = tx.objectStore('files').get('current');
+        q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error);
+      });
+      if (!rec) return false;
+      loadParsed(parseMidi(rec.buf), rec.name);
+      window.__dbLastBuf = rec.buf;
+      if (rec.roles && rec.roles.length === M.tracks.length) {
+        M.tracks.forEach((t, i) => t.role = rec.roles[i]);
+        rebuildNotes();
+      }
+      return true;
+    } catch (e) { return false; }
+  }
+  async function clearMidi() {
+    M.active = false; M.name = null; M.tracks = []; M.notes = [];
+    try {
+      const db = await idb();
+      const tx = db.transaction('files', 'readwrite');
+      tx.objectStore('files').delete('current');
+    } catch (e) {}
+  }
+
+  // ============================================================
+  //  MIDI PLAYBACK — notes as written, layers gated by driving
+  // ============================================================
+
+  function snare(t, gain) {
+    const len = Math.ceil(A.ac.sampleRate * 0.18);
+    const buf = A.ac.createBuffer(1, len, A.ac.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) d[i] = (Math.random()*2-1) * (1 - i/len);
+    const n = A.ac.createBufferSource(); n.buffer = buf;
+    const bp = A.ac.createBiquadFilter();
+    bp.type = 'bandpass'; bp.frequency.value = 1900; bp.Q.value = 0.7;
+    const g = A.ac.createGain();
+    env(g, t, 0.001, 0.18, gain);
+    n.connect(bp); bp.connect(g); g.connect(A.drumBus);
+    n.start(t); n.stop(t + 0.22);
+
+    const o = A.ac.createOscillator(), og = A.ac.createGain();
+    o.type = 'triangle'; o.frequency.setValueAtTime(190, t);
+    env(og, t, 0.001, 0.09, gain * 0.5);
+    o.connect(og); og.connect(A.drumBus);
+    o.start(t); o.stop(t + 0.12);
+  }
+
+  // Sustained voice for MIDI pad tracks — this is what survives at rest.
+  function padNote(t, midi, dur, gain) {
+    const g = A.ac.createGain(), f = A.ac.createBiquadFilter();
+    f.type = 'lowpass'; f.Q.value = 1.2;
+    f.frequency.value = 400 + 1400 * (1 - A.rest);
+    const osc = [];
+    [-0.09, 0.09].forEach(det => {
+      const o = A.ac.createOscillator();
+      o.type = 'sawtooth';
+      o.frequency.value = mtof(midi + det);
+      o.connect(f); o.start(t); o.stop(t + dur + 1.2);
+      osc.push(o);
+    });
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(Math.max(0.0002, gain), t + 0.35);
+    g.gain.setValueAtTime(Math.max(0.0002, gain), t + Math.max(0.36, dur));
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur + 1.0);
+    f.connect(g); g.connect(A.panBus);
+  }
+
+  // General MIDI percussion map, reduced to the three voices we synthesize.
+  function drumHit(midi, t, gain) {
+    if (midi === 35 || midi === 36) kick(t, gain);
+    else if (midi === 38 || midi === 40 || midi === 37) snare(t, gain * 0.8);
+    else if (midi === 42 || midi === 44) hat(t, gain * 0.5, false);
+    else if (midi === 46 || midi === 49 || midi === 51 || midi === 57) hat(t, gain * 0.45, true);
+    else hat(t, gain * 0.35, false);
+  }
+
+  function playMidiNote(n, t) {
+    const tr = M.tracks[n.trackIdx];
+    if (!tr || tr.role === 'off') return;
+    const rg = M.roleGain[tr.role] || 0;
+    if (rg < 0.02) return;
+    const vel = 0.35 + 0.65 * (n.vel / 127);
+    const dur = n.dur * (60 / A.bpm / M.tpq);
+    const attack = 0.04 - 0.038 * Math.min(1, DS.jerk / 12);
+
+    switch (tr.role) {
+      case 'drums': drumHit(n.midi, t, 0.85 * rg * vel); break;
+      case 'bass':  bass(t, n.midi, Math.min(dur, 1.2), 0.30 * rg * vel, attack); break;
+      case 'pad':   padNote(t, n.midi, Math.min(dur, 8), 0.055 * rg * vel); break;
+      case 'keys':  pluck(t, n.midi, Math.min(dur, 0.9), 0.085 * rg * vel); break;
+      case 'lead':  lead(t, n.midi, Math.min(dur, 4), 0.07 * rg * vel); break;
+    }
+  }
+
+  function schedulerMidi() {
+    const horizon = A.ac.currentTime + LOOKAHEAD;
+    if (!M.curTime || M.curTime < A.ac.currentTime) M.curTime = A.ac.currentTime + 0.06;
+    const bar = M.tpq * 4;
+    const hasPad = M.tracks.some(t => t.role === 'pad');
+    let guard = 0;
+
+    while (M.curTime < horizon && guard++ < 20000) {
+      while (M.idx < M.notes.length && M.notes[M.idx].start <= M.curTick) {
+        playMidiNote(M.notes[M.idx], M.curTime);
+        M.idx++;
+      }
+      if (M.curTick % bar === 0) {
+        const d = A.pendingBpm - A.bpm;
+        A.bpm += Math.max(-4, Math.min(4, d));
+        A.feel = A.pendingFeel;
+        // Without a pad track there would be nothing left at rest, so the
+        // generated bed stands in.
+        if (!hasPad && (M.curTick / bar) % 2 === 0) {
+          const ci = Math.floor(M.curTick / bar / 2) % CHORDS.length;
+          padChord(M.curTime, CHORDS[ci], (60 / A.bpm) * 8, 1 - A.rest);
+        }
+      }
+      M.curTick++;
+      M.curTime += 60 / A.bpm / M.tpq;
+      if (M.curTick >= M.lengthTicks) { M.curTick = 0; M.idx = 0; }
+    }
+  }
+
+  // Layer gating: this is where driving decides what you hear.
+  function updateRoleGains() {
+    const band = 1 - A.rest, D = DS;
+    const tgt = {
+      pad:   1,
+      bass:  band,
+      drums: band * (A.feel === 'half' ? 0.55 : 1),
+      keys:  band * Math.max(0, Math.min(1, (D.intensity - 0.12) / 0.33)),
+      lead:  band * (D.aggression > (M.roleGain.lead > 0.5 ? 0.48 : 0.58) ? 1 : 0)
+    };
+    for (const k in tgt) M.roleGain[k] += (tgt[k] - M.roleGain[k]) * 0.08;
+  }
+
+  // ============================================================
   //  AUDIO ENGINE (M4) — generative driving techno
   // ============================================================
   const A = {
@@ -297,6 +614,7 @@
 
   function scheduler() {
     if (!A.ac || A.ac.state !== 'running') return;
+    if (M.active && M.notes.length) return schedulerMidi();
     while (A.nextTime < A.ac.currentTime + LOOKAHEAD) {
       scheduleStep(A.step, A.nextTime);
       // Tempo and feel changes land on bar lines only (spec 4.4).
@@ -519,6 +837,8 @@
     // Rest: fade to pad alone over ~4s, rejoin handled on bar lines.
     A.restTarget = D.stationary ? 1 : 0;
     A.rest += (A.restTarget - A.rest) * 0.03;
+
+    updateRoleGains();
   }
 
   // ---------- start ----------
@@ -546,6 +866,8 @@
       S.started = true; S.t0 = performance.now();
       $('start').hidden = true; $('main').hidden = false;
       updateSignLabel();
+
+      if (await loadSavedMidi()) { lastBuf = window.__dbLastBuf || null; renderMidiUI(); }
 
       startAudio();
       setInterval(applyMapping, 100);
@@ -610,11 +932,55 @@
     CFG.signLat *= -1; localStorage.setItem('db.signLat', CFG.signLat); updateSignLabel();
   });
 
+  // ---------- MIDI UI ----------
+  let lastBuf = null;
+  $('midiPick').addEventListener('click', () => $('midiFile').click());
+  $('midiFile').addEventListener('change', async e => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    const err = $('midiErr'); err.hidden = true;
+    try {
+      const buf = await file.arrayBuffer();
+      loadParsed(parseMidi(buf), file.name);
+      lastBuf = buf;
+      await saveMidi(file.name, buf, M.tracks.map(t => t.role));
+      renderMidiUI();
+    } catch (ex) {
+      err.textContent = ex.message || String(ex);
+      err.hidden = false;
+    }
+    e.target.value = '';
+  });
+  $('midiClear').addEventListener('click', async () => {
+    await clearMidi(); lastBuf = null; renderMidiUI();
+  });
+
+  function renderMidiUI() {
+    $('midiName').textContent = M.active ? M.name : 'Built-in generator';
+    const box = $('midiTracks');
+    if (!M.active) { box.innerHTML = ''; return; }
+    box.innerHTML = M.tracks.map((t, i) =>
+      '<div style="display:grid;grid-template-columns:1fr 96px;gap:8px;align-items:center;margin-bottom:6px">' +
+      '<span style="font-size:.8rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
+      t.name.replace(/[<>&]/g, '') + ' <span style="color:var(--dim)">(' + t.notes.length + ')</span></span>' +
+      '<select data-t="' + i + '" style="font:inherit;font-size:.78rem;background:var(--panel-2);' +
+      'color:var(--text);border:1px solid var(--line);border-radius:8px;padding:6px">' +
+      ROLES.map(r => '<option value="' + r + '"' + (t.role === r ? ' selected' : '') + '>' + r + '</option>').join('') +
+      '</select></div>').join('');
+    box.querySelectorAll('select').forEach(sel => {
+      sel.addEventListener('change', async () => {
+        M.tracks[+sel.dataset.t].role = sel.value;
+        rebuildNotes();
+        if (lastBuf) await saveMidi(M.name, lastBuf, M.tracks.map(t => t.role));
+      });
+    });
+  }
+
   // ---------- render ----------
   function render() {
     $('n-feel').textContent = DS.stationary ? 'at rest' : A.feel;
     $('n-meta').textContent =
-      Math.round(A.bpm) + ' bpm · ' + A.scale +
+      Math.round(A.bpm) + ' bpm · ' + (M.active ? 'midi' : A.scale) +
       (DS.brake > 0.15 ? ' · braking' : DS.accel > 0.15 ? ' · pulling' : '');
     $('n-meter').style.width = (DS.intensity*100).toFixed(0) + '%';
 

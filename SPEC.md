@@ -408,6 +408,42 @@ Re-entry when motion resumes: kick and bass return on the next **bar** boundary,
 not immediately. A beat of anticipation reads as intent; an instant return reads
 as a glitch.
 
+
+### 4.7 Uploaded MIDI
+
+A user-supplied MIDI file can replace the built-in generator. MIDI is note
+data, not audio, so the §4.2 argument still holds in full: tempo remains a
+number in the scheduler, with no time-stretching and no pitch shift.
+
+**Model: layers gated by driving.** The notes play exactly as written; driving
+decides which layers are audible, plus tempo and filter. This keeps the user's
+composition intact while staying reactive — the alternative, letting
+`aggression` re-pick a scale, would clash against a written melody, so scale
+selection is disabled whenever a file is loaded.
+
+Each track is assigned a role, guessed on load and overridable in the UI:
+
+| Role | Guessed from | Audible when |
+|---|---|---|
+| `drums` | MIDI channel 10 | moving (quieter at half-time feel) |
+| `bass` | lowest average pitch | moving |
+| `pad` | longest average note among the middle tracks | **always, including at rest** |
+| `keys` | anything left over | `intensity` > 0.12, ramped |
+| `lead` | highest average pitch | `aggression` > 0.58, hysteresis to 0.48 |
+| `off` | — | never |
+
+If a file has no pad track, the generated pad bed stands in, so a rest is never
+silence.
+
+**Implementation.** The Standard MIDI File parser is inline — no dependency, no
+CDN — because the app must work in a car with no signal. It handles format 0
+and 1, running status, note-on-with-velocity-0 as note-off, and notes left
+hanging at end of track; SMPTE timecode division is rejected with a message.
+The file is stored in IndexedDB and reloaded automatically on the next launch,
+along with any role overrides.
+
+The file's own tempo map is deliberately ignored — tempo comes from driving.
+
 ---
 
 ## 5. iOS runtime constraints
@@ -470,6 +506,8 @@ can be revisited deliberately rather than drifted away from.
    otherwise the app is untestable on a desk. See §6.
 5. **At rest: sustained ambient bed.** The music never fully stops during a
    session. See §4.6.
+6. **Uploaded MIDI: layers gated by driving**, parsed inline and remembered in
+   IndexedDB. See §4.7.
 
 ---
 
