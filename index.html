@@ -278,6 +278,9 @@
       const open = {};                       // key -> note being held
       const notes = [];
       let name = '';
+      // Program and bank in effect per channel, so each note knows which
+      // soundfont preset it wants.
+      const prog = new Array(16).fill(0), bankM = new Array(16).fill(0);
 
       while (p < end) {
         tick += vlq();
@@ -295,15 +298,21 @@
           const n = u8(), vel = u8();
           const key = ch * 128 + n;
           if (type === 0x90 && vel > 0) {
-            open[key] = { midi: n, vel, start: tick, ch };
+            open[key] = { midi: n, vel, start: tick, ch,
+                          prog: prog[ch], bank: ch === 9 ? 128 : bankM[ch] };
           } else if (open[key]) {
             const o = open[key];
             notes.push({ midi: o.midi, vel: o.vel, start: o.start,
-                         dur: Math.max(1, tick - o.start), ch: o.ch });
+                         dur: Math.max(1, tick - o.start), ch: o.ch,
+                         prog: o.prog, bank: o.bank });
             delete open[key];
           }
-        } else if (type === 0xa0 || type === 0xb0 || type === 0xe0) { p += 2; }
-        else if (type === 0xc0 || type === 0xd0) { p += 1; }
+        } else if (type === 0xb0) {
+          const cc = u8(), val = u8();
+          if (cc === 0) bankM[ch] = val;
+        } else if (type === 0xa0 || type === 0xe0) { p += 2; }
+        else if (type === 0xc0) { prog[ch] = u8(); }
+        else if (type === 0xd0) { p += 1; }
         else { p = end; }
       }
       p = end;
@@ -311,7 +320,8 @@
       // Anything still held at end-of-track gets a nominal length.
       for (const k in open) {
         const o = open[k];
-        notes.push({ midi: o.midi, vel: o.vel, start: o.start, dur: div, ch: o.ch });
+        notes.push({ midi: o.midi, vel: o.vel, start: o.start, dur: div, ch: o.ch,
+                     prog: o.prog, bank: o.bank });
       }
       if (notes.length) {
         notes.sort((a, b) => a.start - b.start);
@@ -322,11 +332,15 @@
         for (const ch of chans) {
           const cn = notes.filter(n => n.ch === ch);
           const avg = cn.reduce((s, n) => s + n.midi, 0) / cn.length;
+          const tally = {};
+          cn.forEach(n => { const k = n.bank + ':' + n.prog; tally[k] = (tally[k]||0)+1; });
+          const top = Object.keys(tally).sort((a,b) => tally[b]-tally[a])[0].split(':');
           tracks.push({
             name: chans.length > 1
               ? (name ? name + ' ch' + (ch + 1) : 'Ch ' + (ch + 1))
               : (name || ('Track ' + (tracks.length + 1))),
-            notes: cn, isDrum: ch === 9, avgPitch: avg, role: null
+            notes: cn, isDrum: ch === 9, avgPitch: avg, role: null,
+            bank: +top[0], program: +top[1]
           });
         }
       }
