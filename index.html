@@ -336,31 +336,53 @@
   }
 
   // Guess a role per track so a file is usable without any fiddling.
-  function assignRoles(tracks) {
-    const melodic = tracks.filter(t => !t.isDrum).sort((a, b) => a.avgPitch - b.avgPitch);
-    tracks.forEach(t => { if (t.isDrum) t.role = 'drums'; });
-    if (melodic.length) {
-      melodic[0].role = 'bass';
-      if (melodic.length > 1) melodic[melodic.length - 1].role = 'lead';
-      // Longest average note in the middle becomes the pad — it carries the rest.
-      const mid = melodic.slice(1, -1);
-      if (mid.length) {
-        mid.sort((a, b) =>
-          (b.notes.reduce((s, n) => s + n.dur, 0) / b.notes.length) -
-          (a.notes.reduce((s, n) => s + n.dur, 0) / a.notes.length));
-        mid[0].role = 'pad';
-        mid.slice(1).forEach(t => t.role = 'keys');
-      } else if (melodic.length === 1) {
-        melodic[0].role = 'pad';
-      }
+  // Files range from 4 tracks to 16+, so this both picks primary voices and
+  // then distributes the remainder by character - dumping everything spare
+  // into one role would make the layer gating meaningless.
+  function assignRoles(tracks, tpq) {
+    const maxN = Math.max.apply(null, tracks.map(t => t.notes.length));
+    tracks.forEach(t => {
+      t.avgDur = t.notes.reduce((s, n) => s + n.dur, 0) / t.notes.length;
+      // A handful of notes is usually a stab or a drone, not a main voice.
+      t.substantial = t.notes.length >= Math.max(4, maxN * 0.05);
+      t.role = t.isDrum ? 'drums' : null;
+    });
+
+    const mel = tracks.filter(t => !t.isDrum);
+    if (!mel.length) return;
+    const cand = mel.filter(t => t.substantial);
+    const pick = cand.length ? cand : mel;
+
+    // A lone melodic track carries the whole song, so it must not be routed
+    // to the bass synth just for being the lowest thing present.
+    if (mel.length === 1) {
+      mel[0].role = mel[0].avgPitch < 48 ? 'bass' : 'keys';
+      return;
     }
-    tracks.forEach(t => { if (!t.role) t.role = 'keys'; });
+
+    const byPitch = pick.slice().sort((a, b) => a.avgPitch - b.avgPitch);
+    byPitch[0].role = 'bass';
+    if (byPitch.length > 1) byPitch[byPitch.length - 1].role = 'lead';
+    const spare = pick.filter(t => !t.role);
+    if (spare.length) {
+      spare.sort((a, b) => b.avgDur - a.avgDur);
+      spare[0].role = 'pad';
+    }
+
+    // Remaining tracks join whichever layer matches their character.
+    mel.forEach(t => {
+      if (t.role) return;
+      if (t.avgDur >= tpq * 2) t.role = 'pad';
+      else if (t.avgPitch < 48) t.role = 'bass';
+      else if (t.avgPitch >= 72) t.role = 'lead';
+      else t.role = 'keys';
+    });
   }
 
   function loadParsed(parsed, name) {
     M.tpq = parsed.tpq;
     M.tracks = parsed.tracks;
-    assignRoles(M.tracks);
+    assignRoles(M.tracks, M.tpq);
     rebuildNotes();
     M.name = name;
     M.active = true;

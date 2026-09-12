@@ -421,7 +421,13 @@ composition intact while staying reactive — the alternative, letting
 `aggression` re-pick a scale, would clash against a written melody, so scale
 selection is disabled whenever a file is loaded.
 
-Each track is assigned a role, guessed on load and overridable in the UI:
+Each track is assigned a role, guessed on load and overridable in the UI.
+Assignment picks primary voices, then distributes the remaining tracks by
+character (sustain length and pitch) rather than dumping them all into one
+role — on a 16-track file, a single-pick-per-role scheme left 75% of the notes
+in `keys`, which makes the layer gating meaningless. Tracks with very few notes
+are excluded from the primary picks, since a stab or a drone should not beat
+the real bassline to the `bass` role.
 
 | Role | Guessed from | Audible when |
 |---|---|---|
