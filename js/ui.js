@@ -1,4 +1,4 @@
-import { A, applyMapping, initAudio, startAudio } from './engine.js';
+import { A, applyMapping, initAudio, startAudio, toggleAudio } from './engine.js';
 import { M, ROLES, ROLE_LABELS, loadParsed, parseMidi, rebuildNotes } from './midi.js';
 import { clearMidi, deleteMidi, listMidi, loadMidiNamed, loadSavedMidi, resetStorage, saveMidi } from './midi-store.js';
 import { CFG, DS, S, loadConfig, onMotion } from './motion.js';
@@ -42,6 +42,7 @@ import { $, clamp, fmt } from './util.js';
       renderSfUI();
 
       startAudio();
+      renderTransport();
       setInterval(applyMapping, 100);
       setInterval(render, 80);
 
@@ -109,8 +110,26 @@ import { $, clamp, fmt } from './util.js';
     CFG.signLat *= -1; localStorage.setItem('db.signLat', CFG.signLat); updateSignLabel();
   });
 
+  // ---------- transport ----------
+  // One button, because it is pressed at a red light and read at a glance: it
+  // says what the next tap does.
+  function renderTransport() {
+    const b = $('playPause');
+    b.textContent = A.running ? 'Pause' : 'Play';
+    b.setAttribute('aria-pressed', A.running ? 'true' : 'false');
+  }
+  $('playPause').addEventListener('click', () => { toggleAudio(); renderTransport(); });
+
   // ---------- MIDI UI ----------
   let lastBuf = null;
+  // null clears the line; a string shows it. Storage failures are not fatal -
+  // the song plays either way - but they have to be visible, because the file
+  // is gone on the next reload.
+  function showMidiErr(msg) {
+    const err = $('midiErr');
+    err.textContent = msg || '';
+    err.hidden = !msg;
+  }
   $('midiPick').addEventListener('click', () => $('midiFile').click());
   $('midiFile').addEventListener('change', async e => {
     const file = e.target.files && e.target.files[0];
@@ -120,10 +139,11 @@ import { $, clamp, fmt } from './util.js';
       const buf = await file.arrayBuffer();
       loadParsed(parseMidi(buf), file.name);
       lastBuf = buf;
-      await saveMidi(file.name, buf, M.tracks.map(t => t.role));
+      const failed = await saveMidi(file.name, buf, M.tracks.map(t => t.role));
       renderMidiUI();
       await renderMidiLib();
       sfSync();                       // the needed sample set just changed
+      showMidiErr(failed);
     } catch (ex) {
       err.textContent = ex.message || String(ex);
       err.hidden = false;
@@ -248,17 +268,25 @@ import { $, clamp, fmt } from './util.js';
       ROLES.map(r => '<option value="' + r + '"' + (t.role === r ? ' selected' : '') + '>' +
         ROLE_LABELS[r] + '</option>').join('') +
       '</select></div>').join('');
+    // Which song these controls describe. Loading a file is asynchronous, so a
+    // dropdown left open across a load would otherwise apply its role to the
+    // track that now sits at that index in a different song.
+    const gen = M.gen;
     box.querySelectorAll('select').forEach(sel => {
       sel.addEventListener('change', async () => {
-        M.tracks[+sel.dataset.t].role = sel.value;
+        if (M.gen !== gen) return;
+        const tr = M.tracks[+sel.dataset.t];
+        if (!tr) return;
+        tr.role = sel.value;
         rebuildNotes();
-        if (lastBuf) await saveMidi(M.name, lastBuf, M.tracks.map(t => t.role));
+        if (lastBuf) showMidiErr(await saveMidi(M.name, lastBuf, M.tracks.map(t => t.role)));
       });
     });
   }
 
   // ---------- render ----------
   function render() {
+    renderTransport();
     $('n-feel').textContent = DS.stationary ? 'at rest' : A.feel;
     $('n-meta').textContent =
       Math.round(A.bpm) + ' bpm · ' + (M.active ? 'midi' : A.scale) +

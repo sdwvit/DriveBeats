@@ -136,3 +136,59 @@ test('resetting storage empties the library and the pointer', async () => {
   assert.equal(db.data.size, 0);
   assert.equal(await store.loadSavedMidi(), null);
 });
+
+// ---------------------------------------------------------------
+// the connection, and failing to save
+// ---------------------------------------------------------------
+
+test('one connection is opened and then reused', async () => {
+  await store.saveMidi('map29.mid', read('map29.mid'), null);
+  await store.listMidi();
+  await store.loadMidiNamed('map29.mid');
+  // Every read and write used to open its own connection. Dozens of live
+  // connections is not itself audible, but each one blocks a version change,
+  // so the first schema bump would hang on an onblocked nobody handled.
+  assert.equal(db.opens, 1);
+});
+
+test('a blocked open fails with something the UI can show, rather than hanging', async () => {
+  db = globalThis.indexedDB = fakeIndexedDB({ blocked: true });
+  const msg = await store.saveMidi('map29.mid', read('map29.mid'), null);
+  assert.match(msg, /another drivebeats tab/i);
+});
+
+test('a failed open is not cached as the answer to every later call', async () => {
+  db = globalThis.indexedDB = fakeIndexedDB({ blocked: true });
+  await store.saveMidi('map29.mid', read('map29.mid'), null);
+  assert.equal(await store.listMidi().then(l => l.length), 0);
+  assert.ok(db.opens > 1, 'it tries again rather than answering from a dead promise');
+});
+
+test('the connection is dropped when another tab asks for an upgrade', async () => {
+  await store.saveMidi('map29.mid', read('map29.mid'), null);
+  const conn = await store.idb();
+  conn.onversionchange();
+  assert.equal(db.closes, 1, 'the connection is closed, not left blocking the upgrade');
+  await store.listMidi();
+  assert.equal(db.opens, 2, 'and the next call opens a fresh one');
+});
+
+test('a save that runs out of storage says so instead of pretending', async () => {
+  // The file plays either way, so this is not fatal - but silently it left the
+  // library empty and the song gone on the next reload.
+  const quota = Object.assign(new Error('exceeded'), { name: 'QuotaExceededError' });
+  db = globalThis.indexedDB = fakeIndexedDB({ failPut: quota });
+  const msg = await store.saveMidi('map29.mid', read('map29.mid'), null);
+  assert.match(msg, /not enough storage/i);
+  assert.match(msg, /playing/i, 'and says the song itself is fine');
+});
+
+test('a successful save reports nothing', async () => {
+  assert.equal(await store.saveMidi('map29.mid', read('map29.mid'), null), null);
+});
+
+test('any other write failure is reported too', async () => {
+  db = globalThis.indexedDB = fakeIndexedDB({ failPut: new Error('disk on fire') });
+  const msg = await store.saveMidi('map29.mid', read('map29.mid'), null);
+  assert.match(msg, /disk on fire/);
+});

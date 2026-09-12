@@ -105,24 +105,45 @@ import { MAX_SF_VOICES, SF, cachedZones, loadSamples, sfVoice } from './sf2.js';
   // Load (or reload) exactly the samples the current MIDI file needs. Called
   // when either the font or the MIDI changes; roles do not affect it, because
   // pruning covers every track including the muted ones.
+  //
+  // Loading takes seconds and a driver can pick a second file inside them.
+  // Returning early while a load is in flight left the new song playing the
+  // previous one's samples - every note either silent or the wrong instrument,
+  // with the status line claiming it was loaded. So a request made during a
+  // load is remembered and serviced when that load finishes, and only the
+  // newest one survives: sfWant counts requests, and the loop keeps going
+  // until the run it just finished is the one that was last asked for.
+  let sfWant = 0;
+
   async function sfSync() {
-    if (!SF.file || !A.ac || SF.loading) return;
-    if (!M.active || !M.tracks.length) {
-      SF.ready = false;
-      SF.status = 'Upload a MIDI file to use this soundfont.';
-      sfChanged(); return;
+    const mine = ++sfWant;
+    if (SF.loading) return;            // the run in flight will pick this up
+    if (!SF.file || !A.ac) return;
+
+    let served = mine - 1;
+    while (served !== sfWant) {
+      served = sfWant;
+      if (!M.active || !M.tracks.length) {
+        SF.ready = false;
+        SF.status = 'Upload a MIDI file to use this soundfont.';
+        sfChanged();
+        continue;
+      }
+      SF.loading = true; SF.ready = false; SF.progress = 0;
+      SF.status = 'Loading samples\u2026'; sfChanged();
+      try {
+        const r = await loadSamples(M.tracks, A.ac, sfChanged);
+        SF.status = r.samples + ' samples \u00b7 ' +
+                    (r.bytes / 1048576).toFixed(1) + ' MB in memory';
+      } catch (e) {
+        SF.ready = false;
+        SF.status = 'Could not load samples: ' + (e && e.message ? e.message : e);
+      }
+      SF.loading = false; SF.progress = 1; sfChanged();
+      // sfReset() while samples were loading means the font is gone; the
+      // buffers just filled belong to nothing and must not be played.
+      if (!SF.file) { SF.ready = false; SF.buffers.clear(); SF.bytes = 0; sfChanged(); return; }
     }
-    SF.loading = true; SF.ready = false; SF.progress = 0;
-    SF.status = 'Loading samples\u2026'; sfChanged();
-    try {
-      const r = await loadSamples(M.tracks, A.ac, sfChanged);
-      SF.status = r.samples + ' samples \u00b7 ' +
-                  (r.bytes / 1048576).toFixed(1) + ' MB in memory';
-    } catch (e) {
-      SF.ready = false;
-      SF.status = 'Could not load samples: ' + (e && e.message ? e.message : e);
-    }
-    SF.loading = false; SF.progress = 1; sfChanged();
   }
 
   function sfReset() {

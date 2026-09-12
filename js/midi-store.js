@@ -1,3 +1,4 @@
+import { silenceAll } from './engine.js';
 import { M, loadParsed, parseMidi, rebuildNotes } from './midi.js';
 
   // ---- IndexedDB -------------------------------------------------
@@ -11,14 +12,43 @@ import { M, loadParsed, parseMidi, rebuildNotes } from './midi.js';
   // transaction closes as soon as its requests drain, so awaiting a read and
   // then issuing a write inside the same one is a portability trap; there is
   // only ever one user here, so nothing is lost by not sharing a transaction.
+  //
+  // One connection is opened and then reused. Opening a fresh one per call
+  // meant dozens of live connections, and an open connection blocks a version
+  // change: the day the schema is bumped, the upgrade fires onblocked - which
+  // nothing handled - and startup waits for a deleteDatabase that never comes.
+  // So: a single cached connection, closed as soon as another tab asks for an
+  // upgrade (onversionchange), and onblocked rejected with something the UI can
+  // actually show instead of hanging.
+  //
+  // The cache is keyed on the indexedDB object itself so that swapping the
+  // global - which is what the tests do between cases - cannot hand back a
+  // connection into the store that was just thrown away.
+  let conn = null, connFor = null;
+
   function idb() {
-    return new Promise((res, rej) => {
+    if (conn && connFor === indexedDB) return conn;
+    connFor = indexedDB;
+    conn = new Promise((res, rej) => {
       const r = indexedDB.open('drivebeats', 1);
       r.onupgradeneeded = () => r.result.createObjectStore('files');
-      r.onsuccess = () => res(r.result);
-      r.onerror = () => rej(r.error);
+      r.onblocked = () => rej(new Error('Another DriveBeats tab is open. Close it and reload.'));
+      r.onsuccess = () => {
+        const db = r.result;
+        // Hold nothing open across a schema change, in either direction: drop
+        // the connection and the cache so the next call opens the new version.
+        db.onversionchange = () => { closeDb(); try { db.close(); } catch (e) {} };
+        db.onclose = () => closeDb();
+        res(db);
+      };
+      r.onerror = () => { closeDb(); rej(r.error); };
     });
+    // A failed open must not be cached as the answer for every later call.
+    conn.catch(() => closeDb());
+    return conn;
   }
+
+  function closeDb() { conn = null; connFor = null; }
 
   const KEY = name => 'midi:' + name;
 
@@ -37,12 +67,26 @@ import { M, loadParsed, parseMidi, rebuildNotes } from './midi.js';
   const putKey = (key, val) => request('readwrite', os => { os.put(val, key); });
   const delKey = key => request('readwrite', os => { os.delete(key); });
 
+  /** Store a file and make it current. Returns null on success, else a message.
+   *
+   *  The failure that matters here is the quota: a few MIDI files are nothing,
+   *  but a browser in private mode - or one already full - rejects the write.
+   *  Swallowing that left the song playing and apparently saved, with the
+   *  library silently empty and the file gone on the next reload. It is not
+   *  fatal, so nothing throws, but the caller has to be able to say so.
+   */
   async function saveMidi(name, buf, roles) {
     try {
       const prev = await getKey(KEY(name)).catch(() => null);
       await putKey(KEY(name), { name, buf, roles, added: (prev && prev.added) || Date.now() });
       await putKey('current', { name });
-    } catch (e) { /* private mode / quota - not fatal */ }
+      return null;
+    } catch (e) {
+      const quota = e && (e.name === 'QuotaExceededError' || /quota/i.test(e.message || ''));
+      return quota
+        ? 'Not enough storage to keep this file, so it is playing but not saved.'
+        : 'This file is playing but could not be saved: ' + ((e && e.message) || e);
+    }
   }
 
   /** Every stored file, most recently added first. Never throws. */
@@ -110,8 +154,11 @@ import { M, loadParsed, parseMidi, rebuildNotes } from './midi.js';
 
   /** Back to the built-in generator. The library is kept. */
   async function clearMidi() {
-    M.active = false; M.name = null; M.tracks = []; M.notes = [];
+    // Back to the generator, but the file's notes are scheduled ahead of the
+    // playhead and would keep playing underneath it.
+    silenceAll();
+    M.active = false; M.name = null; M.tracks = []; M.notes = []; M.gen++;
     try { await delKey('current'); } catch (e) {}
   }
 
-export { clearMidi, deleteMidi, idb, listMidi, loadMidiNamed, loadSavedMidi, resetStorage, saveMidi };
+export { clearMidi, closeDb, deleteMidi, idb, listMidi, loadMidiNamed, loadSavedMidi, resetStorage, saveMidi };

@@ -1,6 +1,7 @@
 import { M } from './midi.js';
 import { DS } from './motion.js';
 import { schedulerMidi, slewBpm, updateRoleGains } from './playback.js';
+import { SF } from './sf2.js';
 
   // ============================================================
   //  AUDIO ENGINE (M4) — generative driving techno
@@ -41,6 +42,66 @@ import { schedulerMidi, slewBpm, updateRoleGains } from './playback.js';
 
   const mtof = m => 440 * Math.pow(2, (m - 69) / 12);
 
+  // Everything audible hangs off A.master: the pan bus, the drum bus, and the
+  // generated bass, which connects to it directly. That makes master the one
+  // node retiring cuts, so the buses are built as a set.
+  function buildBuses() {
+    A.master = A.ac.createGain();
+    A.master.gain.value = 0.8;
+    A.master.connect(A.lp);
+
+    A.panBus = A.ac.createStereoPanner ? A.ac.createStereoPanner() : A.ac.createGain();
+    A.panBus.connect(A.master);
+
+    A.drumBus = A.ac.createGain();
+    A.drumBus.connect(A.master);
+  }
+
+  // ---- cutting off whatever is currently sounding -----------------
+  //
+  // Switching MIDI file - or dropping back to the generator - left the previous
+  // song ringing over the new one. A note already handed to start()/stop()
+  // cannot be un-scheduled, and the tails here are long: the scheduler runs
+  // LOOKAHEAD ahead, padNote holds for the note plus a second, padChord runs
+  // eight bars and stops its oscillators three seconds after that, and a
+  // soundfont voice with a loop plus release is longer still. This applies to
+  // the built-in generator exactly as much as to a file, because both feed the
+  // same buses.
+  //
+  // So rather than chase individual voices, retire the bus they are all
+  // connected to: fade the old master out over CUT and disconnect it, then
+  // build a fresh master/pan/drum set for everything scheduled from here on.
+  // The old voices keep running into a node that goes nowhere and stop
+  // themselves at the times they were already given.
+  const CUT = 0.03;
+
+  function silenceAll() {
+    if (!A.ac || !A.master) return;
+    const t = A.ac.currentTime, old = A.master;
+    try {
+      old.gain.cancelScheduledValues(t);
+      old.gain.setValueAtTime(Math.max(1e-4, old.gain.value), t);
+      old.gain.exponentialRampToValueAtTime(1e-4, t + CUT);
+    } catch (e) { /* the param is already torn down; the disconnect still counts */ }
+    // Disconnected only after the fade has actually run - pulling the node out
+    // of the graph at once is the click the fade exists to avoid.
+    setTimeout(() => { try { old.disconnect(); } catch (e) {} }, CUT * 1000 + 50);
+
+    buildBuses();
+
+    // padChord fades the previous chord instead of starting a new one, and
+    // SF.excl chokes the voice it remembers. Both point into the graph that
+    // was just retired, so anything they touch now is inaudible anyway - and
+    // holding the references keeps the old nodes alive for no reason.
+    padNodes = null;
+    SF.excl.clear();
+
+    // Re-base both schedulers: the playhead is about to be somewhere else, and
+    // a stale nextTime would dump every missed step at once on the next wake.
+    A.nextTime = A.ac.currentTime + 0.06;
+    M.curTime = 0;
+  }
+
   // The context is passed in rather than constructed here, so a test can drive
   // the whole engine with a recording stub. The real one is created inside the
   // Start gesture (iOS will not unlock audio outside one).
@@ -63,15 +124,7 @@ import { schedulerMidi, slewBpm, updateRoleGains } from './playback.js';
     A.lp.type = 'lowpass'; A.lp.frequency.value = 1200; A.lp.Q.value = 0.8;
     A.lp.connect(A.comp);
 
-    A.master = A.ac.createGain();
-    A.master.gain.value = 0.8;
-    A.master.connect(A.lp);
-
-    A.panBus = A.ac.createStereoPanner ? A.ac.createStereoPanner() : A.ac.createGain();
-    A.panBus.connect(A.master);
-
-    A.drumBus = A.ac.createGain();
-    A.drumBus.connect(A.master);
+    buildBuses();
 
     // Silent buffer: the belt-and-braces iOS unlock.
     const b = A.ac.createBuffer(1, 1, 22050);
@@ -79,16 +132,44 @@ import { schedulerMidi, slewBpm, updateRoleGains } from './playback.js';
     src.buffer = b; src.connect(A.ac.destination); src.start(0);
   }
 
-  function startAudio() {
+  // `reset` is false when resuming from a pause: the pattern carries on from
+  // the step it was on rather than snapping back to the top of the phrase.
+  function startAudio(reset = true) {
     if (A.running) return;
     A.running = true;
     A.nextTime = A.ac.currentTime + 0.1;
-    A.step = 0;
+    if (reset) A.step = 0;
+    if (A.ac.resume && A.ac.state !== 'running') A.ac.resume().catch(() => {});
     A.timer = setInterval(scheduler, TICK);
   }
 
+  // Pause has to cut as well as stop scheduling: the last tick has already
+  // handed the context up to LOOKAHEAD of notes, and a pad chord holds for
+  // bars after that, so stopping the timer alone leaves the song playing on
+  // for seconds. Suspending the context would freeze those notes rather than
+  // end them, and they would all resume mid-tail on the next play.
+  function stopAudio() {
+    if (!A.running) return;
+    A.running = false;
+    clearInterval(A.timer);
+    A.timer = null;
+    silenceAll();
+    // Suspended after the fade has run, or the fade is frozen too.
+    if (A.ac.suspend) setTimeout(() => {
+      if (!A.running && A.ac.suspend) A.ac.suspend().catch(() => {});
+    }, CUT * 1000 + 50);
+  }
+
+  function toggleAudio() {
+    if (A.running) stopAudio(); else startAudio(false);
+    return A.running;
+  }
+
   function scheduler() {
-    if (!A.ac || A.ac.state !== 'running') return;
+    // A tick already queued when pause was pressed would otherwise schedule one
+    // more bar - past the fade, so it plays into a silent bus and is simply
+    // lost, but on resume the pattern has jumped.
+    if (!A.running || !A.ac || A.ac.state !== 'running') return;
     if (M.active && M.notes.length) return schedulerMidi();
     // A backgrounded tab or a phone call freezes nextTime while currentTime
     // runs on, and every past-dated start() fires at once on resume: ten
@@ -353,4 +434,4 @@ import { schedulerMidi, slewBpm, updateRoleGains } from './playback.js';
     updateRoleGains();
   }
 
-export { A, CHORDS, LOOKAHEAD, MIN_TAIL, ROOT, SCALES, TICK, applyMapping, bass, env, hat, initAudio, kick, lead, mtof, padChord, padNodes, pluck, scheduleStep, scheduler, startAudio };
+export { A, CHORDS, CUT, LOOKAHEAD, MIN_TAIL, ROOT, SCALES, TICK, applyMapping, bass, buildBuses, env, hat, initAudio, kick, lead, mtof, padChord, padNodes, pluck, scheduleStep, scheduler, silenceAll, startAudio, stopAudio, toggleAudio };

@@ -1,3 +1,5 @@
+import { silenceAll } from './engine.js';
+
   // ============================================================
   //  MIDI — inline Standard MIDI File parser + IndexedDB store
   // ============================================================
@@ -11,6 +13,11 @@
     idx: 0,
     curTick: 0,
     curTime: 0,
+    // Bumped on every song change. The UI stamps its controls with it, so a
+    // change event that was already in flight when a different file loaded can
+    // be recognised as belonging to the old song and dropped - otherwise it
+    // muted whichever track happened to land on the same index.
+    gen: 0,
     roleGain: { drums: 0, bass: 0, pad: 1, lead: 0, keys: 0 }
   };
 
@@ -271,12 +278,16 @@
   }
 
   function loadParsed(parsed, name) {
+    // The song that was playing a moment ago is still scheduled several
+    // seconds out; without this the two arrangements overlap on every switch.
+    silenceAll();
     M.tpq = parsed.tpq;
     M.tracks = parsed.tracks;
     assignRoles(M.tracks, M.tpq);
     rebuildNotes();
     M.name = name;
     M.active = true;
+    M.gen++;
     M.idx = 0; M.curTick = 0; M.curTime = 0;
   }
 

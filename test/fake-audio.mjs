@@ -28,13 +28,18 @@ class FakeNode {
     this.ctx = ctx; this.type = type; this.id = ctx._nextId++;
     this.outputs = [];
     ctx.log.push({ node: type, id: this.id, op: 'create', time: ctx.currentTime });
+    // The log records automation only; live properties (loop, loopStart,
+    // buffer) live on the node, so a test has to be able to find it again.
+    ctx._nodes.set(this.id, this);
   }
   _param(name) { return this[name] || (this[name] = new FakeParam(this.ctx, this, name)); }
   connect(dest) { this.outputs.push(dest); return dest; }
   disconnect() { this.outputs.length = 0; }
-  start(t = this.ctx.currentTime) {
-    this.startTime = t;
-    this.ctx.log.push({ node: this.type, id: this.id, op: 'start', time: t, buffer: this.buffer || null });
+  // `offset` is where in the buffer playback begins - what startAddrsOffset
+  // moves - and is not the same thing as when the note starts.
+  start(t = this.ctx.currentTime, offset = 0) {
+    this.startTime = t; this.startOffset = offset;
+    this.ctx.log.push({ node: this.type, id: this.id, op: 'start', time: t, offset, buffer: this.buffer || null });
   }
   stop(t = this.ctx.currentTime) {
     this.stopTime = t;
@@ -55,10 +60,12 @@ export class FakeAudioContext {
     this.state = 'running';
     this.log = [];
     this._nextId = 1;
+    this._nodes = new Map();
     this.destination = new FakeNode(this, 'destination');
   }
   advance(seconds) { this.currentTime += seconds; }
   resume() { this.state = 'running'; return Promise.resolve(); }
+  suspend() { this.state = 'suspended'; return Promise.resolve(); }
 
   createGain() { return makeNode(this, 'gain', ['gain']); }
   createOscillator() {
