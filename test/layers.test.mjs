@@ -9,7 +9,8 @@ import assert from 'node:assert/strict';
 import { DS } from '../js/motion.js';
 import { M } from '../js/midi.js';
 import { A } from '../js/engine.js';
-import { updateRoleGains } from '../js/playback.js';
+import { ROLES, ROLE_LABELS } from '../js/midi.js';
+import { TIERS, updateRoleGains } from '../js/playback.js';
 
 const MPH = 0.44704;
 
@@ -118,4 +119,22 @@ test('without GPS, sustained aggression stands in for speed', () => {
   A.tier = 0;
   for (let i = 0; i < 400; i++) updateRoleGains();
   assert.ok(A.tier >= 3, `hard driving without GPS still opens the mix (tier ${A.tier})`);
+});
+
+// The track menu tells the driver when a part is audible rather than naming a
+// timbre, so a wrong number there is a lie about the behaviour above.
+test('every role has a label, and the mph in it is its real breakpoint', () => {
+  for (const r of ROLES) assert.ok(ROLE_LABELS[r], `no label for role '${r}'`);
+  assert.deepEqual(Object.keys(ROLE_LABELS).sort(), [...ROLES].sort());
+
+  for (const r of ROLES) {
+    if (r === 'off') continue;
+    const stated = /from (\d+) mph/.exec(ROLE_LABELS[r]);
+    const tier = TIERS.find(t => t.roles.indexOf(r) >= 0);
+    if (!stated) {
+      assert.equal(tier.mph, 0, `'${r}' claims to be always on but starts at ${tier.mph} mph`);
+      continue;
+    }
+    assert.equal(+stated[1], tier.mph, `label for '${r}' states the wrong speed`);
+  }
 });

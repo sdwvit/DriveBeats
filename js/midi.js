@@ -16,6 +16,19 @@
 
   const ROLES = ['drums', 'bass', 'pad', 'keys', 'lead', 'off'];
 
+  // "pad" and "keys" mean nothing to a driver who does not read music, and the
+  // choice that actually matters here is not timbre but when a part is audible:
+  // the speed ladder in playback.js gates each role at a breakpoint. So the
+  // menu names the breakpoint. Keep these in the same order as ROLES.
+  const ROLE_LABELS = {
+    drums: 'Beat \u2014 from 10 mph',
+    bass:  'Bassline \u2014 from 10 mph',
+    pad:   'Background \u2014 always on',
+    keys:  'Extra \u2014 from 20 mph',
+    lead:  'Melody \u2014 from 30 mph',
+    off:   'Muted'
+  };
+
   // General MIDI program names, for labelling a track whose own name is
   // missing or useless.
   const GM = ('Acoustic Grand Piano,Bright Acoustic Piano,Electric Grand Piano,Honky-tonk Piano,' +
@@ -258,4 +271,4 @@
     M.idx = 0; M.curTick = 0;
   }
 
-export { CREDITS, GM, M, PART, ROLES, assignRoles, loadParsed, looksLikeCredits, parseMidi, rebuildNotes, trackLabel };
+export { CREDITS, GM, M, PART, ROLES, ROLE_LABELS, assignRoles, loadParsed, looksLikeCredits, parseMidi, rebuildNotes, trackLabel };

@@ -1,5 +1,5 @@
 import { A, applyMapping, initAudio, startAudio } from './engine.js';
-import { M, ROLES, loadParsed, parseMidi, rebuildNotes } from './midi.js';
+import { M, ROLES, ROLE_LABELS, loadParsed, parseMidi, rebuildNotes } from './midi.js';
 import { clearMidi, deleteMidi, listMidi, loadMidiNamed, loadSavedMidi, resetStorage, saveMidi } from './midi-store.js';
 import { CFG, DS, S, loadConfig, onMotion } from './motion.js';
 import { sfReset, sfSync } from './playback.js';
@@ -240,12 +240,13 @@ import { $, clamp, fmt } from './util.js';
     const box = $('midiTracks');
     if (!M.active) { box.innerHTML = ''; return; }
     box.innerHTML = M.tracks.map((t, i) =>
-      '<div style="display:grid;grid-template-columns:1fr 96px;gap:8px;align-items:center;margin-bottom:6px">' +
+      '<div style="display:grid;grid-template-columns:1fr 168px;gap:8px;align-items:center;margin-bottom:6px">' +
       '<span style="font-size:.8rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
       t.name.replace(/[<>&]/g, '') + ' <span style="color:var(--dim)">(' + t.notes.length + ')</span></span>' +
       '<select data-t="' + i + '" style="font:inherit;font-size:.78rem;background:var(--panel-2);' +
       'color:var(--text);border:1px solid var(--line);border-radius:8px;padding:6px">' +
-      ROLES.map(r => '<option value="' + r + '"' + (t.role === r ? ' selected' : '') + '>' + r + '</option>').join('') +
+      ROLES.map(r => '<option value="' + r + '"' + (t.role === r ? ' selected' : '') + '>' +
+        ROLE_LABELS[r] + '</option>').join('') +
       '</select></div>').join('');
     box.querySelectorAll('select').forEach(sel => {
       sel.addEventListener('change', async () => {

@@ -226,4 +226,4 @@ import { MAX_SF_VOICES, SF, cachedZones, loadSamples, sfVoice } from './sf2.js';
     for (const k in tgt) M.roleGain[k] += (tgt[k] - M.roleGain[k]) * 0.08;
   }
 
-export { SF_GAIN, drumHit, padNote, playMidiNote, schedulerMidi, sfChanged, sfNote, sfReset, sfSync, slewBpm, snare, updateRoleGains };
+export { SF_GAIN, TIERS, drumHit, padNote, playMidiNote, schedulerMidi, sfChanged, sfNote, sfReset, sfSync, slewBpm, snare, updateRoleGains };
