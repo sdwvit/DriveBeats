@@ -2,8 +2,6 @@ import { A, CHORDS, LOOKAHEAD, bass, env, hat, kick, lead, mtof, padChord, pluck
 import { M } from './midi.js';
 import { DS } from './motion.js';
 import { MAX_SF_VOICES, SF, cachedZones, loadSamples, sfVoice } from './sf2.js';
-import { renderSfUI } from './ui.js';
-import { $ } from './util.js';
 
   // ============================================================
   //  MIDI PLAYBACK — notes as written, layers gated by driving
@@ -100,6 +98,10 @@ import { $ } from './util.js';
     return any;
   }
 
+  // The UI subscribes to soundfont progress rather than being called by name,
+  // so loading can be driven from a test with no DOM present.
+  function sfChanged() { if (SF.onChange) SF.onChange(); }
+
   // Load (or reload) exactly the samples the current MIDI file needs. Called
   // when either the font or the MIDI changes; roles do not affect it, because
   // pruning covers every track including the muted ones.
@@ -108,21 +110,19 @@ import { $ } from './util.js';
     if (!M.active || !M.tracks.length) {
       SF.ready = false;
       SF.status = 'Upload a MIDI file to use this soundfont.';
-      renderSfUI(); return;
+      sfChanged(); return;
     }
     SF.loading = true; SF.ready = false; SF.progress = 0;
-    SF.status = 'Loading samples\u2026'; renderSfUI();
+    SF.status = 'Loading samples\u2026'; sfChanged();
     try {
-      const r = await loadSamples(M.tracks, A.ac, () => {
-        $('sfProg').style.width = (SF.progress * 100).toFixed(0) + '%';
-      });
+      const r = await loadSamples(M.tracks, A.ac, sfChanged);
       SF.status = r.samples + ' samples \u00b7 ' +
                   (r.bytes / 1048576).toFixed(1) + ' MB in memory';
     } catch (e) {
       SF.ready = false;
       SF.status = 'Could not load samples: ' + (e && e.message ? e.message : e);
     }
-    SF.loading = false; SF.progress = 1; renderSfUI();
+    SF.loading = false; SF.progress = 1; sfChanged();
   }
 
   function sfReset() {
@@ -189,4 +189,4 @@ import { $ } from './util.js';
     for (const k in tgt) M.roleGain[k] += (tgt[k] - M.roleGain[k]) * 0.08;
   }
 
-export { SF_GAIN, drumHit, padNote, playMidiNote, schedulerMidi, sfNote, sfReset, sfSync, slewBpm, snare, updateRoleGains };
+export { SF_GAIN, drumHit, padNote, playMidiNote, schedulerMidi, sfChanged, sfNote, sfReset, sfSync, slewBpm, snare, updateRoleGains };

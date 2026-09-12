@@ -172,10 +172,16 @@
   const fmt = (v,d=2) => (v===null||v===undefined||Number.isNaN(v))?'—':v.toFixed(d);
 
   const MAX_DT = 0.2, DEADBAND = 0.4;
-  const CFG = {
-    signFwd: +localStorage.getItem('db.signFwd') || 1,
-    signLat: +localStorage.getItem('db.signLat') || 1
-  };
+  // The iOS accelerometer axis signs were never confirmed, so forward and
+  // lateral each have a runtime flip. loadConfig() reads the persisted choice;
+  // it is called from the UI rather than at import time, so this module can be
+  // imported where there is no localStorage.
+  const CFG = { signFwd: 1, signLat: 1 };
+
+  function loadConfig() {
+    CFG.signFwd = +localStorage.getItem('db.signFwd') || 1;
+    CFG.signLat = +localStorage.getItem('db.signLat') || 1;
+  }
 
   // ---- DriveState: the only thing the audio engine reads ----
   const DS = {
@@ -530,15 +536,15 @@
         const q = tx.objectStore('files').get('current');
         q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error);
       });
-      if (!rec) return false;
+      if (!rec) return null;
       loadParsed(parseMidi(rec.buf), rec.name);
-      window.__dbLastBuf = rec.buf;
       if (rec.roles && rec.roles.length === M.tracks.length) {
         M.tracks.forEach((t, i) => t.role = rec.roles[i]);
         rebuildNotes();
       }
-      return true;
-    } catch (e) { return false; }
+      // The caller keeps the buffer so it can re-save when roles change.
+      return rec.buf;
+    } catch (e) { return null; }
   }
   async function clearMidi() {
     M.active = false; M.name = null; M.tracks = []; M.notes = [];
@@ -565,7 +571,8 @@
     zoneCache: new Map(),        // "preset:key:vel" -> zones
     excl: new Map(),             // exclusiveClass -> voice to choke
     loading: false, progress: 0, status: '',
-    bytes: 0, voices: 0
+    bytes: 0, voices: 0,
+    onChange: null               // set by the UI; kept null in tests
   };
 
   const MAX_SF_VOICES = 64;
@@ -1040,6 +1047,10 @@
     return any;
   }
 
+  // The UI subscribes to soundfont progress rather than being called by name,
+  // so loading can be driven from a test with no DOM present.
+  function sfChanged() { if (SF.onChange) SF.onChange(); }
+
   // Load (or reload) exactly the samples the current MIDI file needs. Called
   // when either the font or the MIDI changes; roles do not affect it, because
   // pruning covers every track including the muted ones.
@@ -1048,21 +1059,19 @@
     if (!M.active || !M.tracks.length) {
       SF.ready = false;
       SF.status = 'Upload a MIDI file to use this soundfont.';
-      renderSfUI(); return;
+      sfChanged(); return;
     }
     SF.loading = true; SF.ready = false; SF.progress = 0;
-    SF.status = 'Loading samples\u2026'; renderSfUI();
+    SF.status = 'Loading samples\u2026'; sfChanged();
     try {
-      const r = await loadSamples(M.tracks, A.ac, () => {
-        $('sfProg').style.width = (SF.progress * 100).toFixed(0) + '%';
-      });
+      const r = await loadSamples(M.tracks, A.ac, sfChanged);
       SF.status = r.samples + ' samples \u00b7 ' +
                   (r.bytes / 1048576).toFixed(1) + ' MB in memory';
     } catch (e) {
       SF.ready = false;
       SF.status = 'Could not load samples: ' + (e && e.message ? e.message : e);
     }
-    SF.loading = false; SF.progress = 1; renderSfUI();
+    SF.loading = false; SF.progress = 1; sfChanged();
   }
 
   function sfReset() {
@@ -1167,9 +1176,11 @@
 
   const mtof = m => 440 * Math.pow(2, (m - 69) / 12);
 
-  function initAudio() {
-    const AC = window.AudioContext || window.webkitAudioContext;
-    A.ac = new AC();
+  // The context is passed in rather than constructed here, so a test can drive
+  // the whole engine with a recording stub. The real one is created inside the
+  // Start gesture (iOS will not unlock audio outside one).
+  function initAudio(ctx) {
+    A.ac = ctx;
 
     A.limiter = A.ac.createDynamicsCompressor();
     A.limiter.threshold.value = -2; A.limiter.ratio.value = 20;
@@ -1440,6 +1451,9 @@
     updateRoleGains();
   }
 
+  loadConfig();
+  SF.onChange = () => renderSfUI();
+
   // ---------- start ----------
   $('startBtn').addEventListener('click', async () => {
     if (S.started) return;
@@ -1447,7 +1461,8 @@
     try {
       // Audio must be created inside the gesture on iOS — do it first, so a
       // motion-permission denial cannot cost us the unlock.
-      initAudio();
+      const AC = window.AudioContext || window.webkitAudioContext;
+      initAudio(new AC());
       if (A.ac.state === 'suspended') await A.ac.resume();
 
       if (typeof DeviceMotionEvent !== 'undefined' &&
@@ -1466,7 +1481,8 @@
       $('start').hidden = true; $('main').hidden = false;
       updateSignLabel();
 
-      if (await loadSavedMidi()) { lastBuf = window.__dbLastBuf || null; renderMidiUI(); }
+      const saved = await loadSavedMidi();
+      if (saved) { lastBuf = saved; renderMidiUI(); }
       renderSfUI();
 
       startAudio();

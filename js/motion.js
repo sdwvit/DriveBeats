@@ -1,10 +1,16 @@
 import { clamp } from './util.js';
 
   const MAX_DT = 0.2, DEADBAND = 0.4;
-  const CFG = {
-    signFwd: +localStorage.getItem('db.signFwd') || 1,
-    signLat: +localStorage.getItem('db.signLat') || 1
-  };
+  // The iOS accelerometer axis signs were never confirmed, so forward and
+  // lateral each have a runtime flip. loadConfig() reads the persisted choice;
+  // it is called from the UI rather than at import time, so this module can be
+  // imported where there is no localStorage.
+  const CFG = { signFwd: 1, signLat: 1 };
+
+  function loadConfig() {
+    CFG.signFwd = +localStorage.getItem('db.signFwd') || 1;
+    CFG.signLat = +localStorage.getItem('db.signLat') || 1;
+  }
 
   // ---- DriveState: the only thing the audio engine reads ----
   const DS = {
@@ -22,8 +28,10 @@ import { clamp } from './util.js';
   };
 
   // ---------- motion ----------
-  function onMotion(e) {
-    const now = performance.now();
+  // `now` is injectable so a test can feed an exact event rate; the browser
+  // always calls this as a plain devicemotion listener and takes the default.
+  function onMotion(e, now) {
+    if (now === undefined) now = performance.now();
     const a = e.acceleration, ag = e.accelerationIncludingGravity;
     if (!a || a.x === null) return;
 
@@ -72,4 +80,4 @@ import { clamp } from './util.js';
            if (now - S.stillSince > 3000) DS.stationary = true; }
     DS.speed = S.gps.speed;
   }
-export { CFG, DS, MAX_DT, S, onMotion };
+export { CFG, DS, MAX_DT, S, loadConfig, onMotion };

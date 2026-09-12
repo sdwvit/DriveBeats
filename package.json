@@ -1,0 +1,13 @@
+{
+  "name": "drivebeats",
+  "version": "1.0.0",
+  "description": "Generative driving music, shaped by the accelerometer. Static page, no dependencies.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node build.mjs --check && node --test test/*.test.mjs",
+    "corpus": "node test/corpus.mjs",
+    "serve": "python3 -m http.server 8000"
+  }
+}

@@ -1,10 +1,13 @@
 import { A, applyMapping, initAudio, startAudio } from './engine.js';
 import { M, ROLES, loadParsed, parseMidi, rebuildNotes } from './midi.js';
 import { clearMidi, loadSavedMidi, saveMidi } from './midi-store.js';
-import { CFG, DS, S, onMotion } from './motion.js';
+import { CFG, DS, S, loadConfig, onMotion } from './motion.js';
 import { sfReset, sfSync } from './playback.js';
 import { SF, parseSf2 } from './sf2.js';
 import { $, clamp, fmt } from './util.js';
+
+  loadConfig();
+  SF.onChange = () => renderSfUI();
 
   // ---------- start ----------
   $('startBtn').addEventListener('click', async () => {
@@ -13,7 +16,8 @@ import { $, clamp, fmt } from './util.js';
     try {
       // Audio must be created inside the gesture on iOS — do it first, so a
       // motion-permission denial cannot cost us the unlock.
-      initAudio();
+      const AC = window.AudioContext || window.webkitAudioContext;
+      initAudio(new AC());
       if (A.ac.state === 'suspended') await A.ac.resume();
 
       if (typeof DeviceMotionEvent !== 'undefined' &&
@@ -32,7 +36,8 @@ import { $, clamp, fmt } from './util.js';
       $('start').hidden = true; $('main').hidden = false;
       updateSignLabel();
 
-      if (await loadSavedMidi()) { lastBuf = window.__dbLastBuf || null; renderMidiUI(); }
+      const saved = await loadSavedMidi();
+      if (saved) { lastBuf = saved; renderMidiUI(); }
       renderSfUI();
 
       startAudio();

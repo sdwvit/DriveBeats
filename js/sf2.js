@@ -14,7 +14,8 @@
     zoneCache: new Map(),        // "preset:key:vel" -> zones
     excl: new Map(),             // exclusiveClass -> voice to choke
     loading: false, progress: 0, status: '',
-    bytes: 0, voices: 0
+    bytes: 0, voices: 0,
+    onChange: null               // set by the UI; kept null in tests
   };
 
   const MAX_SF_VOICES = 64;

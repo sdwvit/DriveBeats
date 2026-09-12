@@ -27,15 +27,15 @@ import { M, loadParsed, parseMidi, rebuildNotes } from './midi.js';
         const q = tx.objectStore('files').get('current');
         q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error);
       });
-      if (!rec) return false;
+      if (!rec) return null;
       loadParsed(parseMidi(rec.buf), rec.name);
-      window.__dbLastBuf = rec.buf;
       if (rec.roles && rec.roles.length === M.tracks.length) {
         M.tracks.forEach((t, i) => t.role = rec.roles[i]);
         rebuildNotes();
       }
-      return true;
-    } catch (e) { return false; }
+      // The caller keeps the buffer so it can re-save when roles change.
+      return rec.buf;
+    } catch (e) { return null; }
   }
   async function clearMidi() {
     M.active = false; M.name = null; M.tracks = []; M.notes = [];

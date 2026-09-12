@@ -40,9 +40,11 @@ import { schedulerMidi, slewBpm, updateRoleGains } from './playback.js';
 
   const mtof = m => 440 * Math.pow(2, (m - 69) / 12);
 
-  function initAudio() {
-    const AC = window.AudioContext || window.webkitAudioContext;
-    A.ac = new AC();
+  // The context is passed in rather than constructed here, so a test can drive
+  // the whole engine with a recording stub. The real one is created inside the
+  // Start gesture (iOS will not unlock audio outside one).
+  function initAudio(ctx) {
+    A.ac = ctx;
 
     A.limiter = A.ac.createDynamicsCompressor();
     A.limiter.threshold.value = -2; A.limiter.ratio.value = 20;
