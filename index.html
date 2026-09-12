@@ -3,268 +3,549 @@
 
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>DriveBeats</title>
-  <meta name="description" content="">
-  <meta name="theme-color" content="#fafafa">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>DriveBeats — M1 Sensor Readout</title>
+  <meta name="description" content="Raw sensor readout for DriveBeats milestone 1.">
+  <meta name="theme-color" content="#0a0a0c">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <style>
-/*! HTML5 Boilerplate v9.0.1 | MIT License | https://html5boilerplate.com/ */
+    :root {
+      --bg: #0a0a0c;
+      --panel: #141419;
+      --panel-2: #1c1c23;
+      --line: #2a2a34;
+      --text: #e8e8ee;
+      --dim: #8a8a99;
+      --accent: #4da3ff;
+      --pos: #35d07f;
+      --neg: #ff5c5c;
+      --warn: #ffb020;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, "Cascadia Mono", monospace;
+    }
 
-/* main.css 3.0.0 | MIT License | https://github.com/h5bp/main.css#readme */
-/*
- * What follows is the result of much research on cross-browser styling.
- * Credit left inline and big thanks to Nicolas Gallagher, Jonathan Neal,
- * Kroc Camen, and the H5BP dev community and team.
- */
+    * { box-sizing: border-box; }
 
-/* ==========================================================================
-   Base styles: opinionated defaults
-   ========================================================================== */
+    html, body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      -webkit-text-size-adjust: 100%;
+      overscroll-behavior: none;
+    }
 
-html {
-  color: #222;
-  font-size: 1em;
-  line-height: 1.4;
-}
+    body {
+      padding: max(12px, env(safe-area-inset-top)) 12px max(12px, env(safe-area-inset-bottom));
+      min-height: 100vh;
+    }
 
-/*
- * Remove text-shadow in selection highlight:
- * https://twitter.com/miketaylr/status/12228805301
- *
- * Customize the background color to match your design.
- */
+    h1 { font-size: 1.1rem; margin: 0 0 2px; letter-spacing: -0.01em; }
+    h2 {
+      font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.09em;
+      color: var(--dim); margin: 0 0 8px; font-weight: 600;
+    }
 
-::-moz-selection {
-  background: #b3d4fc;
-  text-shadow: none;
-}
+    .sub { color: var(--dim); font-size: 0.78rem; margin: 0 0 16px; }
 
-::selection {
-  background: #b3d4fc;
-  text-shadow: none;
-}
+    /* ---------- start screen ---------- */
+    #start { max-width: 460px; margin: 0 auto; }
 
-/*
- * A better looking default horizontal rule
- */
+    .req {
+      background: var(--panel); border: 1px solid var(--line);
+      border-radius: 12px; padding: 14px 16px; margin: 0 0 14px;
+    }
+    .req ul { margin: 0; padding-left: 18px; }
+    .req li { font-size: 0.83rem; line-height: 1.55; color: var(--dim); margin-bottom: 5px; }
+    .req li strong { color: var(--text); font-weight: 600; }
 
-hr {
-  display: block;
-  height: 1px;
-  border: 0;
-  border-top: 1px solid #ccc;
-  margin: 1em 0;
-  padding: 0;
-}
+    button {
+      font: inherit; cursor: pointer; border-radius: 10px;
+      border: 1px solid var(--line); background: var(--panel-2); color: var(--text);
+      padding: 10px 14px; -webkit-tap-highlight-color: transparent;
+    }
+    button:active { background: #26262f; }
 
-/*
- * Remove the gap between audio, canvas, iframes,
- * images, videos and the bottom of their containers:
- * https://github.com/h5bp/html5-boilerplate/issues/440
- */
+    #startBtn {
+      display: block; width: 100%; padding: 18px;
+      font-size: 1.05rem; font-weight: 600;
+      background: var(--accent); color: #04121f; border: none;
+    }
+    #startBtn:active { background: #3d8ce0; }
 
-audio,
-canvas,
-iframe,
-img,
-svg,
-video {
-  vertical-align: middle;
-}
+    #startErr { color: var(--neg); font-size: 0.82rem; margin-top: 12px; line-height: 1.5; }
 
-/*
- * Remove default fieldset styles.
- */
+    /* ---------- main ---------- */
+    #main { max-width: 560px; margin: 0 auto; }
 
-fieldset {
-  border: 0;
-  margin: 0;
-  padding: 0;
-}
+    .card {
+      background: var(--panel); border: 1px solid var(--line);
+      border-radius: 12px; padding: 12px 14px; margin-bottom: 10px;
+    }
 
-/*
- * Allow only vertical resizing of textareas.
- */
+    /* axis rows */
+    .axis { display: grid; grid-template-columns: 22px 1fr 84px; align-items: center; gap: 9px; margin-bottom: 9px; }
+    .axis:last-child { margin-bottom: 0; }
+    .axis .name { font-family: var(--mono); font-size: 1rem; font-weight: 700; color: var(--dim); }
+    .axis .val  { font-family: var(--mono); font-size: 0.95rem; text-align: right; font-variant-numeric: tabular-nums; }
 
-textarea {
-  resize: vertical;
-}
+    /* bipolar bar */
+    .bar { position: relative; height: 26px; background: var(--panel-2); border-radius: 5px; overflow: hidden; }
+    .bar .zero { position: absolute; left: 50%; top: 0; bottom: 0; width: 1px; background: var(--line); }
+    .bar .fill { position: absolute; top: 3px; bottom: 3px; left: 50%; width: 0; background: var(--accent); border-radius: 3px; }
+    .bar .pk { position: absolute; top: 1px; bottom: 1px; width: 2px; background: var(--warn); opacity: 0.85; }
 
-/* ==========================================================================
-   Author's custom styles
-   ========================================================================== */
+    /* generic key/value grid */
+    .kv { display: grid; grid-template-columns: 1fr auto; gap: 5px 12px; font-size: 0.84rem; }
+    .kv dt { color: var(--dim); }
+    .kv dd { margin: 0; font-family: var(--mono); text-align: right; font-variant-numeric: tabular-nums; }
 
-/* ==========================================================================
-   Helper classes
-   ========================================================================== */
+    .pill {
+      display: inline-block; padding: 2px 8px; border-radius: 20px;
+      font-size: 0.7rem; font-weight: 600; letter-spacing: 0.03em;
+    }
+    .pill.ok   { background: rgba(53,208,127,0.15); color: var(--pos); }
+    .pill.bad  { background: rgba(255,176,32,0.15); color: var(--warn); }
 
-/*
- * Hide visually and from screen readers
- */
+    .banner {
+      border-radius: 10px; padding: 10px 12px; margin-bottom: 10px;
+      font-size: 0.82rem; line-height: 1.5;
+      background: rgba(255,176,32,0.1); border: 1px solid rgba(255,176,32,0.35); color: var(--warn);
+    }
+    .banner.err { background: rgba(255,92,92,0.1); border-color: rgba(255,92,92,0.35); color: var(--neg); }
 
-.hidden,
-[hidden] {
-  display: none !important;
-}
+    .row { display: flex; gap: 8px; }
+    .row > button { flex: 1; font-size: 0.82rem; }
 
-/*
- * Hide only visually, but have it available for screen readers:
- * https://snook.ca/archives/html_and_css/hiding-content-for-accessibility
- *
- * 1. For long content, line feeds are not interpreted as spaces and small width
- *    causes content to wrap 1 word per line:
- *    https://medium.com/@jessebeach/beware-smushed-off-screen-accessible-text-5952a4c2cbfe
- */
+    /* event log */
+    #events { font-family: var(--mono); font-size: 0.75rem; max-height: 220px; overflow-y: auto; }
+    #events .ev { padding: 6px 0; border-bottom: 1px solid var(--line); display: grid; grid-template-columns: 46px 1fr; gap: 8px; }
+    #events .ev:last-child { border-bottom: 0; }
+    #events .t { color: var(--dim); }
+    #events .d b { font-weight: 700; }
+    .pos { color: var(--pos); }
+    .neg { color: var(--neg); }
+    .empty { color: var(--dim); font-size: 0.8rem; font-family: -apple-system, system-ui, sans-serif; }
 
-.visually-hidden {
-  border: 0;
-  clip: rect(0, 0, 0, 0);
-  height: 1px;
-  margin: -1px;
-  overflow: hidden;
-  padding: 0;
-  position: absolute;
-  white-space: nowrap;
-  width: 1px;
-  /* 1 */
-}
-
-/*
- * Extends the .visually-hidden class to allow the element
- * to be focusable when navigated to via the keyboard:
- * https://www.drupal.org/node/897638
- */
-
-.visually-hidden.focusable:active,
-.visually-hidden.focusable:focus {
-  clip: auto;
-  height: auto;
-  margin: 0;
-  overflow: visible;
-  position: static;
-  white-space: inherit;
-  width: auto;
-}
-
-/*
- * Hide visually and from screen readers, but maintain layout
- */
-
-.invisible {
-  visibility: hidden;
-}
-
-/*
- * Clearfix: contain floats
- *
- * The use of `table` rather than `block` is only necessary if using
- * `::before` to contain the top-margins of child elements.
- */
-
-.clearfix::before,
-.clearfix::after {
-  content: "";
-  display: table;
-}
-
-.clearfix::after {
-  clear: both;
-}
-
-/* ==========================================================================
-   EXAMPLE Media Queries for Responsive Design.
-   These examples override the primary ('mobile first') styles.
-   Modify as content requires.
-   ========================================================================== */
-
-@media only screen and (min-width: 35em) {
-  /* Style adjustments for viewports that meet the condition */
-}
-
-@media print,
-  (-webkit-min-device-pixel-ratio: 1.25),
-  (min-resolution: 1.25dppx),
-  (min-resolution: 120dpi) {
-  /* Style adjustments for high resolution devices */
-}
-
-/* ==========================================================================
-   Print styles.
-   Inlined to avoid the additional HTTP request:
-   https://www.phpied.com/delay-loading-your-print-css/
-   ========================================================================== */
-
-@media print {
-  *,
-  *::before,
-  *::after {
-    background: #fff !important;
-    color: #000 !important;
-    /* Black prints faster */
-    box-shadow: none !important;
-    text-shadow: none !important;
-  }
-
-  a,
-  a:visited {
-    text-decoration: underline;
-  }
-
-  a[href]::after {
-    content: " (" attr(href) ")";
-  }
-
-  abbr[title]::after {
-    content: " (" attr(title) ")";
-  }
-
-  /*
-   * Don't show links that are fragment identifiers,
-   * or use the `javascript:` pseudo protocol
-   */
-  a[href^="#"]::after,
-  a[href^="javascript:"]::after {
-    content: "";
-  }
-
-  pre {
-    white-space: pre-wrap !important;
-  }
-
-  pre,
-  blockquote {
-    border: 1px solid #999;
-    page-break-inside: avoid;
-  }
-
-  tr,
-  img {
-    page-break-inside: avoid;
-  }
-
-  p,
-  h2,
-  h3 {
-    orphans: 3;
-    widows: 3;
-  }
-
-  h2,
-  h3 {
-    page-break-after: avoid;
-  }
-}
-
+    .hint { color: var(--dim); font-size: 0.75rem; line-height: 1.5; margin: 8px 0 0; }
+    [hidden] { display: none !important; }
   </style>
 </head>
 
 <body>
 
-  <!-- Add your site or application content here -->
-  <p>Hello world!</p>
+<!-- ============ START SCREEN ============ -->
+<section id="start">
+  <h1>DriveBeats — M1</h1>
+  <p class="sub">Sensor readout. No audio yet.</p>
 
-  <script>
-  </script>
+  <div class="req">
+    <h2>Before you start</h2>
+    <ul>
+      <li>Phone <strong>rigidly mounted</strong>, screen up, <strong>top edge pointing forward</strong>, tilted slightly nose-down.</li>
+      <li>Plugged in — GPS plus a lit screen drains fast.</li>
+      <li>Do not touch the phone while moving. Everything below is automatic.</li>
+    </ul>
+  </div>
+
+  <div class="req">
+    <h2>What this milestone is for</h2>
+    <ul>
+      <li>Confirm motion permission, sample rate and GPS all work on this phone.</li>
+      <li><strong>Discover the real sign convention.</strong> Brake once, accelerate once, turn right once. The event log records the peak of each, so you never need to look while driving.</li>
+    </ul>
+  </div>
+
+  <button id="startBtn">Start Drive</button>
+  <p id="startErr" hidden></p>
+</section>
+
+<!-- ============ MAIN ============ -->
+<section id="main" hidden>
+
+  <div id="noMotion" class="banner err" hidden>
+    No motion events received. This device may have no accelerometer, or motion access was denied.
+  </div>
+  <div id="mountWarn" class="banner" hidden></div>
+
+  <div class="card">
+    <h2>Linear acceleration — m/s² <span style="text-transform:none;letter-spacing:0">(gravity removed)</span></h2>
+    <div class="axis"><div class="name">x</div><div class="bar" id="bar-x"><div class="zero"></div><div class="fill"></div><div class="pk lo"></div><div class="pk hi"></div></div><div class="val" id="val-x">—</div></div>
+    <div class="axis"><div class="name">y</div><div class="bar" id="bar-y"><div class="zero"></div><div class="fill"></div><div class="pk lo"></div><div class="pk hi"></div></div><div class="val" id="val-y">—</div></div>
+    <div class="axis"><div class="name">z</div><div class="bar" id="bar-z"><div class="zero"></div><div class="fill"></div><div class="pk lo"></div><div class="pk hi"></div></div><div class="val" id="val-z">—</div></div>
+    <p class="hint">Scale ±8 m/s². Amber marks are peak hold since reset.</p>
+  </div>
+
+  <div class="card">
+    <h2>Peak hold</h2>
+    <dl class="kv">
+      <dt>x min / max</dt><dd id="pk-x">—</dd>
+      <dt>y min / max</dt><dd id="pk-y">—</dd>
+      <dt>z min / max</dt><dd id="pk-z">—</dd>
+    </dl>
+    <div class="row" style="margin-top:10px">
+      <button id="resetPk">Reset peaks</button>
+      <button id="clearEv">Clear log</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Gravity &amp; mount</h2>
+    <dl class="kv">
+      <dt>gravity vector</dt><dd id="g-vec">—</dd>
+      <dt>magnitude</dt><dd id="g-mag">—</dd>
+      <dt>pitch (nose-down)</dt><dd id="g-pitch">—</dd>
+      <dt>roll (side tilt)</dt><dd id="g-roll">—</dd>
+      <dt>dominant axis</dt><dd id="g-dom">—</dd>
+      <dt>screen facing</dt><dd id="g-face">—</dd>
+    </dl>
+  </div>
+
+  <div class="card">
+    <h2>Sampling</h2>
+    <dl class="kv">
+      <dt>measured rate</dt><dd id="s-rate">—</dd>
+      <dt>reported interval</dt><dd id="s-int">—</dd>
+      <dt>samples</dt><dd id="s-count">0</dd>
+      <dt>dropped (dt &gt; 200ms)</dt><dd id="s-drop">0</dd>
+      <dt>rotation rate</dt><dd id="s-rot">—</dd>
+    </dl>
+  </div>
+
+  <div class="card">
+    <h2>GPS <span style="text-transform:none;letter-spacing:0">— logged, not used</span></h2>
+    <dl class="kv">
+      <dt>status</dt><dd id="gp-stat">—</dd>
+      <dt>speed</dt><dd id="gp-speed">—</dd>
+      <dt>heading</dt><dd id="gp-head">—</dd>
+      <dt>accuracy</dt><dd id="gp-acc">—</dd>
+      <dt>fixes</dt><dd id="gp-n">0</dd>
+    </dl>
+  </div>
+
+  <div class="card">
+    <h2>Event log — peaks above 3 m/s²</h2>
+    <div id="events"><p class="empty">Nothing yet. Brake firmly once, then accelerate firmly once, then take a right turn.</p></div>
+  </div>
+
+  <div class="card">
+    <h2>Session</h2>
+    <dl class="kv">
+      <dt>wake lock</dt><dd id="wl">—</dd>
+      <dt>elapsed</dt><dd id="elapsed">0:00</dd>
+    </dl>
+  </div>
+
+</section>
+
+<script>
+(() => {
+  'use strict';
+
+  const $ = id => document.getElementById(id);
+  const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+  const fmt = (v, d = 2) => (v === null || v === undefined || Number.isNaN(v)) ? '—' : v.toFixed(d);
+
+  const BAR_SCALE = 8;        // m/s² at full deflection
+  const EVENT_ON  = 3.0;      // m/s² horizontal magnitude to open an event
+  const EVENT_OFF = 1.5;      // m/s² to close it (hysteresis)
+  const MAX_DT    = 0.2;      // s — above this we assume a gap, not a sample
+
+  // ---------- state ----------
+  const S = {
+    started: false,
+    t0: 0,
+    acc:  { x: 0, y: 0, z: 0 },
+    grav: { x: 0, y: 0, z: 0 },
+    gravInit: false,
+    rot:  { alpha: 0, beta: 0, gamma: 0 },
+    interval: null,
+    count: 0, dropped: 0,
+    lastT: 0,
+    rate: 0,
+    peak: { x: [0, 0], y: [0, 0], z: [0, 0] },   // [min, max]
+    gps: { speed: null, heading: null, acc: null, n: 0, status: 'idle' },
+    ev: { open: false, peakMag: 0, snap: null },
+    events: [],
+    dirty: true
+  };
+
+  // ---------- start ----------
+  $('startBtn').addEventListener('click', async () => {
+    if (S.started) return;
+    const err = $('startErr');
+    err.hidden = true;
+    try {
+      // 1. Motion permission — must be inside this gesture on iOS.
+      if (typeof DeviceMotionEvent !== 'undefined' &&
+          typeof DeviceMotionEvent.requestPermission === 'function') {
+        const state = await DeviceMotionEvent.requestPermission();
+        if (state !== 'granted') {
+          err.textContent = 'Motion access was denied. Safari only asks once per page load — reload and tap Start again to retry.';
+          err.hidden = false;
+          return;
+        }
+      }
+
+      window.addEventListener('devicemotion', onMotion);
+
+      // 2. GPS — logged from M1 per spec decision 3, consumed by nothing yet.
+      startGeo();
+
+      // 3. Keep the screen awake.
+      requestWakeLock();
+
+      S.started = true;
+      S.t0 = performance.now();
+      $('start').hidden = true;
+      $('main').hidden = false;
+      requestAnimationFrame(render);
+
+      setTimeout(() => { if (S.count === 0) $('noMotion').hidden = false; }, 1500);
+    } catch (e) {
+      err.textContent = 'Could not start: ' + (e && e.message ? e.message : e) +
+        (location.protocol !== 'https:' && location.hostname !== 'localhost'
+          ? ' — note this page is not on HTTPS, which iOS requires for motion access.'
+          : '');
+      err.hidden = false;
+    }
+  });
+
+  // ---------- motion ----------
+  function onMotion(e) {
+    const now = performance.now();
+    const a = e.acceleration;
+    const ag = e.accelerationIncludingGravity;
+
+    if (S.lastT) {
+      const dt = (now - S.lastT) / 1000;
+      if (dt > MAX_DT) {
+        // Integrating across a gap would fabricate a huge spike. Drop it.
+        S.dropped++;
+        S.lastT = now;
+        return;
+      }
+      // Smoothed rate estimate.
+      S.rate = S.rate ? S.rate * 0.9 + (1 / dt) * 0.1 : 1 / dt;
+    }
+    S.lastT = now;
+    S.count++;
+    if (e.interval) S.interval = e.interval;
+
+    if (a && a.x !== null) {
+      S.acc.x = a.x; S.acc.y = a.y; S.acc.z = a.z;
+    }
+
+    // Gravity = accelerationIncludingGravity − acceleration, then heavily
+    // smoothed. Slow is correct: direction only changes if the mount moves.
+    if (ag && ag.x !== null && a && a.x !== null) {
+      const gx = ag.x - a.x, gy = ag.y - a.y, gz = ag.z - a.z;
+      if (!S.gravInit) {
+        S.grav.x = gx; S.grav.y = gy; S.grav.z = gz;
+        S.gravInit = true;
+      } else {
+        const k = 0.02;                     // τ ≈ 0.8s at 60Hz
+        S.grav.x += (gx - S.grav.x) * k;
+        S.grav.y += (gy - S.grav.y) * k;
+        S.grav.z += (gz - S.grav.z) * k;
+      }
+    }
+
+    if (e.rotationRate) S.rot = e.rotationRate;
+
+    trackPeaks();
+    trackEvent(now);
+    S.dirty = true;
+  }
+
+  function trackPeaks() {
+    for (const ax of ['x', 'y', 'z']) {
+      const v = S.acc[ax], p = S.peak[ax];
+      if (v < p[0]) p[0] = v;
+      if (v > p[1]) p[1] = v;
+    }
+  }
+
+  // Capture the peak of each excursion, so the log shows what each axis did
+  // during one real braking/accelerating/cornering event.
+  function trackEvent(now) {
+    const { x, y, z } = S.acc;
+    const mag = Math.hypot(x, y, z);
+
+    if (!S.ev.open && mag > EVENT_ON) {
+      S.ev.open = true;
+      S.ev.peakMag = mag;
+      S.ev.snap = { x, y, z, t: (now - S.t0) / 1000 };
+    } else if (S.ev.open) {
+      if (mag > S.ev.peakMag) {
+        S.ev.peakMag = mag;
+        S.ev.snap = { x, y, z, t: (now - S.t0) / 1000 };
+      }
+      if (mag < EVENT_OFF) {
+        S.ev.open = false;
+        S.events.unshift({ ...S.ev.snap, mag: S.ev.peakMag, gps: S.gps.speed });
+        if (S.events.length > 40) S.events.pop();
+      }
+    }
+  }
+
+  // ---------- GPS ----------
+  let geoWatch = null;
+  function startGeo() {
+    if (!navigator.geolocation) { S.gps.status = 'unsupported'; return; }
+    S.gps.status = 'acquiring…';
+    geoWatch = navigator.geolocation.watchPosition(
+      pos => {
+        S.gps.status = 'ok';
+        S.gps.speed = pos.coords.speed;
+        S.gps.heading = pos.coords.heading;
+        S.gps.acc = pos.coords.accuracy;
+        S.gps.n++;
+        S.dirty = true;
+      },
+      err => { S.gps.status = 'error: ' + err.message; S.dirty = true; },
+      { enableHighAccuracy: true, maximumAge: 1000, timeout: 15000 }
+    );
+  }
+
+  // ---------- wake lock ----------
+  let wakeLock = null;
+  async function requestWakeLock() {
+    if (!('wakeLock' in navigator)) { $('wl').textContent = 'unsupported'; return; }
+    try {
+      wakeLock = await navigator.wakeLock.request('screen');
+      $('wl').textContent = 'held';
+      wakeLock.addEventListener('release', () => { $('wl').textContent = 'released'; });
+    } catch (e) {
+      $('wl').textContent = 'failed';
+    }
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && S.started) requestWakeLock();
+  });
+
+  // ---------- buttons ----------
+  $('resetPk').addEventListener('click', () => {
+    for (const ax of ['x', 'y', 'z']) S.peak[ax] = [S.acc[ax], S.acc[ax]];
+    S.dirty = true;
+  });
+  $('clearEv').addEventListener('click', () => { S.events = []; S.dirty = true; });
+
+  // ---------- render (throttled to ~12Hz; 60Hz DOM writes are wasted) ----------
+  let lastRender = 0;
+  function render(ts) {
+    requestAnimationFrame(render);
+    if (ts - lastRender < 80) return;
+    lastRender = ts;
+
+    // elapsed always ticks
+    const secs = Math.floor((performance.now() - S.t0) / 1000);
+    $('elapsed').textContent = Math.floor(secs / 60) + ':' + String(secs % 60).padStart(2, '0');
+
+    if (!S.dirty) return;
+    S.dirty = false;
+
+    // axes
+    for (const ax of ['x', 'y', 'z']) {
+      const v = S.acc[ax];
+      $('val-' + ax).textContent = fmt(v);
+      $('val-' + ax).className = 'val ' + (v > 0.4 ? 'pos' : v < -0.4 ? 'neg' : '');
+
+      const bar = $('bar-' + ax);
+      const fill = bar.querySelector('.fill');
+      const frac = clamp(v / BAR_SCALE, -1, 1);
+      const pct = Math.abs(frac) * 50;
+      fill.style.width = pct + '%';
+      fill.style.left = frac >= 0 ? '50%' : (50 - pct) + '%';
+      fill.style.background = frac >= 0 ? 'var(--pos)' : 'var(--neg)';
+
+      const [mn, mx] = S.peak[ax];
+      bar.querySelector('.pk.lo').style.left = (50 + clamp(mn / BAR_SCALE, -1, 1) * 50) + '%';
+      bar.querySelector('.pk.hi').style.left = (50 + clamp(mx / BAR_SCALE, -1, 1) * 50) + '%';
+      $('pk-' + ax).textContent = fmt(mn) + ' / ' + fmt(mx);
+    }
+
+    // gravity + mount
+    const g = S.grav;
+    const gm = Math.hypot(g.x, g.y, g.z);
+    $('g-vec').textContent = `${fmt(g.x, 1)}, ${fmt(g.y, 1)}, ${fmt(g.z, 1)}`;
+    $('g-mag').textContent = fmt(gm) + ' m/s²';
+
+    if (S.gravInit && gm > 1) {
+      const deg = r => r * 180 / Math.PI;
+      const pitch = deg(Math.atan2(g.y, Math.abs(g.z)));
+      const roll  = deg(Math.atan2(g.x, Math.abs(g.z)));
+      $('g-pitch').textContent = fmt(Math.abs(pitch), 1) + '°';
+      $('g-roll').textContent  = fmt(roll, 1) + '°';
+
+      const abs = { x: Math.abs(g.x), y: Math.abs(g.y), z: Math.abs(g.z) };
+      const dom = abs.z >= abs.x && abs.z >= abs.y ? 'z' : abs.y >= abs.x ? 'y' : 'x';
+      $('g-dom').textContent = dom + ' (' + fmt(g[dom], 1) + ')';
+      // The Safari sign convention is the unknown M1 exists to resolve, so
+      // report what was measured rather than asserting which way is up.
+      $('g-face').textContent = dom === 'z'
+        ? (g.z > 0 ? 'flat, g.z positive' : 'flat, g.z negative')
+        : 'not flat — upright?';
+
+      const bad = [];
+      if (dom !== 'z') bad.push('phone is not lying flat (gravity is strongest on ' + dom + ', expected z)');
+      if (Math.abs(roll) > 15) bad.push('rolled ' + fmt(roll, 0) + '° to one side');
+      if (Math.abs(pitch) > 40) bad.push('pitched ' + fmt(Math.abs(pitch), 0) + '°, steeper than expected');
+      const mw = $('mountWarn');
+      if (bad.length) {
+        mw.innerHTML = '<strong>Mount looks wrong:</strong> ' + bad.join('; ') +
+          '. Readings will still be shown, but the forward axis assumption may not hold.';
+        mw.hidden = false;
+      } else {
+        mw.hidden = true;
+      }
+    }
+
+    // sampling
+    $('s-rate').textContent  = S.rate ? fmt(S.rate, 1) + ' Hz' : '—';
+    $('s-int').textContent   = S.interval !== null ? fmt(S.interval * 1000, 1) + ' ms' : '—';
+    $('s-count').textContent = S.count;
+    $('s-drop').textContent  = S.dropped;
+    $('s-rot').textContent   = S.rot && S.rot.alpha !== null
+      ? `${fmt(S.rot.alpha, 0)}, ${fmt(S.rot.beta, 0)}, ${fmt(S.rot.gamma, 0)} °/s` : '—';
+
+    // gps
+    $('gp-stat').innerHTML = S.gps.status === 'ok'
+      ? '<span class="pill ok">ok</span>'
+      : '<span class="pill bad">' + S.gps.status + '</span>';
+    $('gp-speed').textContent = S.gps.speed === null || S.gps.speed === undefined
+      ? '—' : fmt(S.gps.speed, 1) + ' m/s  (' + fmt(S.gps.speed * 3.6, 0) + ' km/h)';
+    $('gp-head').textContent = S.gps.heading === null || S.gps.heading === undefined
+      ? '—' : fmt(S.gps.heading, 0) + '°';
+    $('gp-acc').textContent = S.gps.acc === null || S.gps.acc === undefined
+      ? '—' : '±' + fmt(S.gps.acc, 0) + ' m';
+    $('gp-n').textContent = S.gps.n;
+
+    renderEvents();
+  }
+
+  function renderEvents() {
+    const el = $('events');
+    if (!S.events.length) {
+      el.innerHTML = '<p class="empty">Nothing yet. Brake firmly once, then accelerate firmly once, then take a right turn.</p>';
+      return;
+    }
+    el.innerHTML = S.events.map(ev => {
+      // Bold the dominant axis — that is the tell for which axis maps to what.
+      const a = { x: ev.x, y: ev.y, z: ev.z };
+      const dom = Object.keys(a).reduce((m, k) => Math.abs(a[k]) > Math.abs(a[m]) ? k : m, 'x');
+      const parts = ['x', 'y', 'z'].map(k => {
+        const cls = a[k] > 0.4 ? 'pos' : a[k] < -0.4 ? 'neg' : '';
+        const txt = `${k} ${a[k] >= 0 ? '+' : ''}${fmt(a[k], 1)}`;
+        return k === dom ? `<b class="${cls}">${txt}</b>` : `<span class="${cls}">${txt}</span>`;
+      }).join('  ');
+      const spd = (ev.gps !== null && ev.gps !== undefined) ? `  @ ${fmt(ev.gps * 3.6, 0)}km/h` : '';
+      const mm = Math.floor(ev.t / 60), ss = String(Math.floor(ev.t % 60)).padStart(2, '0');
+      return `<div class="ev"><span class="t">${mm}:${ss}</span><span class="d">${parts}${spd}</span></div>`;
+    }).join('');
+  }
+})();
+</script>
 
 </body>
 
