@@ -1,9 +1,11 @@
 // The shipped page: does index.html actually agree with js/?
 //
-// The app has no browser test and audio can only be judged by ear in the car,
-// so these two checks stand in for "the page still loads": every element the
-// code reaches for exists, and the concatenated script runs to completion with
-// its listeners attached.
+// index.html loads js/ui.js as a module and the browser pulls the rest in
+// through its imports, so there is no build step to keep honest. The app has no
+// browser test and audio can only be judged by ear in the car, so these checks
+// stand in for "the page still loads": the entry module is actually referenced,
+// every element the code reaches for exists, and the modules run to completion
+// with their listeners attached.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -26,8 +28,20 @@ test('every id the code looks up exists in the markup', () => {
   assert.deepEqual(missing, [], 'these lookups would return null at runtime');
 });
 
-test('the built script loads without throwing, with its listeners attached', () => {
-  const script = html.split('<script>')[1].split('</script>')[0];
+test('index.html loads the entry module', () => {
+  assert.match(html, /<script type="module" src="js\/ui\.js"><\/script>/);
+});
+
+// Node cannot import the modules with a fake DOM in scope, so they are
+// concatenated in dependency order - the order the browser resolves them in -
+// with their import/export lines dropped, and run in one sandbox.
+const ORDER = ['util', 'motion', 'midi', 'midi-store', 'sf2', 'playback', 'engine', 'ui'];
+
+test('the modules load without throwing, with their listeners attached', () => {
+  const script = ORDER.map(n => fs.readFileSync(path.join(ROOT, 'js', n + '.js'), 'utf8')
+    .split('\n')
+    .filter(l => !/^import[\s{]/.test(l) && !/^export\s*{/.test(l))
+    .join('\n')).join('\n');
 
   const listeners = [];
   const el = () => new Proxy({

@@ -15,5 +15,4 @@ jobs:
         with:
           node-version: '22'
       # No dependencies to install - node's own test runner, on purpose.
-      # This also fails if index.html was not rebuilt from js/.
       - run: npm test

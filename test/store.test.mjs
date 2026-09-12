@@ -127,3 +127,12 @@ test('a store that cannot be opened degrades to no library', async () => {
   await store.saveMidi('x.mid', read('map29.mid'), null);   // must not throw
   await store.deleteMidi('x.mid');
 });
+
+test('resetting storage empties the library and the pointer', async () => {
+  await store.saveMidi('map29.mid', read('map29.mid'), null);
+  await store.saveMidi('D_RUNNIN.mid', read('D_RUNNIN.mid'), null);
+  await store.resetStorage();
+  assert.deepEqual(await store.listMidi(), []);
+  assert.equal(db.data.size, 0);
+  assert.equal(await store.loadSavedMidi(), null);
+});

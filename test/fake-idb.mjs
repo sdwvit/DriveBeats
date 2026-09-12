@@ -18,6 +18,7 @@ class Store {
   get(k) { return new Req(() => this.map.get(k)); }
   put(v, k) { return new Req(() => { this.map.set(k, v); }); }
   delete(k) { return new Req(() => { this.map.delete(k); }); }
+  clear() { return new Req(() => { this.map.clear(); }); }
   getAll() { return new Req(() => [...this.map.values()]); }
 }
 

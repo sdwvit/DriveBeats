@@ -1,6 +1,6 @@
 import { A, applyMapping, initAudio, startAudio } from './engine.js';
 import { M, ROLES, loadParsed, parseMidi, rebuildNotes } from './midi.js';
-import { clearMidi, deleteMidi, listMidi, loadMidiNamed, loadSavedMidi, saveMidi } from './midi-store.js';
+import { clearMidi, deleteMidi, listMidi, loadMidiNamed, loadSavedMidi, resetStorage, saveMidi } from './midi-store.js';
 import { CFG, DS, S, loadConfig, onMotion } from './motion.js';
 import { sfReset, sfSync } from './playback.js';
 import { SF, parseSf2 } from './sf2.js';
@@ -174,6 +174,32 @@ import { $, clamp, fmt } from './util.js';
       });
     });
   }
+
+  // Two taps, because this throws away every uploaded file. The button relabels
+  // itself instead of using confirm(), which is easy to mis-tap while driving
+  // and blocks the audio thread on iOS.
+  let resetArmed = 0;
+  $('resetStore').addEventListener('click', async () => {
+    const btn = $('resetStore');
+    if (Date.now() - resetArmed > 4000) {
+      resetArmed = Date.now();
+      btn.textContent = 'Tap again to erase';
+      setTimeout(() => { if (Date.now() - resetArmed >= 4000) btn.textContent = 'Reset storage'; }, 4000);
+      return;
+    }
+    resetArmed = 0;
+    btn.textContent = 'Reset storage';
+    await resetStorage();
+    try {
+      localStorage.removeItem('db.signFwd');
+      localStorage.removeItem('db.signLat');
+    } catch (e) {}
+    CFG.signFwd = 1; CFG.signLat = 1; updateSignLabel();
+    sfReset(); $('sfErr').hidden = true; renderSfUI();
+    await clearMidi(); lastBuf = null; renderMidiUI(); await renderMidiLib(); sfSync();
+    $('resetDone').hidden = false;
+    setTimeout(() => { $('resetDone').hidden = true; }, 3000);
+  });
 
   // ---------- SoundFont UI ----------
   $('sfPick').addEventListener('click', () => $('sfFile').click());

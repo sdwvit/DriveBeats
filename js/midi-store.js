@@ -102,10 +102,16 @@ import { M, loadParsed, parseMidi, rebuildNotes } from './midi.js';
     } catch (e) {}
   }
 
+  /** Wipe everything this app has stored: the whole library and the pointer.
+   *  The caller resets its own in-memory state; nothing here throws. */
+  async function resetStorage() {
+    try { await request('readwrite', os => { os.clear(); }); } catch (e) {}
+  }
+
   /** Back to the built-in generator. The library is kept. */
   async function clearMidi() {
     M.active = false; M.name = null; M.tracks = []; M.notes = [];
     try { await delKey('current'); } catch (e) {}
   }
 
-export { clearMidi, deleteMidi, idb, listMidi, loadMidiNamed, loadSavedMidi, saveMidi };
+export { clearMidi, deleteMidi, idb, listMidi, loadMidiNamed, loadSavedMidi, resetStorage, saveMidi };
