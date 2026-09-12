@@ -124,6 +124,7 @@
     </div>
     <input type="file" id="midiFile" accept=".mid,.midi,audio/midi,application/octet-stream" hidden>
     <p id="midiErr" class="hint" style="color:var(--neg)" hidden></p>
+    <div id="midiLib" style="margin-top:10px"></div>
     <div id="midiTracks" style="margin-top:10px"></div>
     <p class="hint">Notes play as written, looping. Driving controls tempo, filter and
       which layers are audible. The pad layer keeps playing at rest.</p>
@@ -199,8 +200,10 @@
   };
 
   // ---------- motion ----------
-  function onMotion(e) {
-    const now = performance.now();
+  // `now` is injectable so a test can feed an exact event rate; the browser
+  // always calls this as a plain devicemotion listener and takes the default.
+  function onMotion(e, now) {
+    if (now === undefined) now = performance.now();
     const a = e.acceleration, ag = e.accelerationIncludingGravity;
     if (!a || a.x === null) return;
 
@@ -510,6 +513,16 @@
   }
 
   // ---- IndexedDB -------------------------------------------------
+  //
+  // Every uploaded file is kept under 'midi:<name>', and 'current' is a pointer
+  // to whichever one is loaded. Before this there was a single 'current' record
+  // holding the file itself; that shape is migrated on first read, so an
+  // existing install keeps the file it already had.
+  //
+  // Reads and writes are separate one-shot transactions. An IndexedDB
+  // transaction closes as soon as its requests drain, so awaiting a read and
+  // then issuing a write inside the same one is a portability trap; there is
+  // only ever one user here, so nothing is lost by not sharing a transaction.
   function idb() {
     return new Promise((res, rej) => {
       const r = indexedDB.open('drivebeats', 1);
@@ -518,41 +531,93 @@
       r.onerror = () => rej(r.error);
     });
   }
+
+  const KEY = name => 'midi:' + name;
+
+  function request(mode, fn) {
+    return idb().then(db => new Promise((res, rej) => {
+      const tx = db.transaction('files', mode);
+      const q = fn(tx.objectStore('files'));
+      if (q) { q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); }
+      else { tx.oncomplete = () => res(); }
+      tx.onerror = () => rej(tx.error);
+      tx.onabort = () => rej(tx.error);
+    }));
+  }
+
+  const getKey = key => request('readonly', os => os.get(key));
+  const putKey = (key, val) => request('readwrite', os => { os.put(val, key); });
+  const delKey = key => request('readwrite', os => { os.delete(key); });
+
   async function saveMidi(name, buf, roles) {
     try {
-      const db = await idb();
-      await new Promise((res, rej) => {
-        const tx = db.transaction('files', 'readwrite');
-        tx.objectStore('files').put({ name, buf, roles }, 'current');
-        tx.oncomplete = res; tx.onerror = () => rej(tx.error);
-      });
+      const prev = await getKey(KEY(name)).catch(() => null);
+      await putKey(KEY(name), { name, buf, roles, added: (prev && prev.added) || Date.now() });
+      await putKey('current', { name });
     } catch (e) { /* private mode / quota - not fatal */ }
   }
-  async function loadSavedMidi() {
+
+  /** Every stored file, most recently added first. Never throws. */
+  async function listMidi() {
     try {
-      const db = await idb();
-      const rec = await new Promise((res, rej) => {
-        const tx = db.transaction('files', 'readonly');
-        const q = tx.objectStore('files').get('current');
-        q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error);
-      });
+      const all = await request('readonly', os => os.getAll());
+      return (all || [])
+        .filter(r => r && r.name && r.buf)
+        .sort((a, b) => (b.added || 0) - (a.added || 0))
+        .map(r => ({ name: r.name, bytes: r.buf.byteLength, added: r.added || 0 }));
+    } catch (e) { return []; }
+  }
+
+  /** Apply a stored record to M. Returns its buffer, or null. */
+  function apply(rec) {
+    if (!rec || !rec.buf) return null;
+    loadParsed(parseMidi(rec.buf), rec.name);
+    if (rec.roles && rec.roles.length === M.tracks.length) {
+      M.tracks.forEach((t, i) => t.role = rec.roles[i]);
+      rebuildNotes();
+    }
+    // The caller keeps the buffer so it can re-save when roles change.
+    return rec.buf;
+  }
+
+  /** Load one file from the library by name and make it current. */
+  async function loadMidiNamed(name) {
+    try {
+      const rec = await getKey(KEY(name));
       if (!rec) return null;
-      loadParsed(parseMidi(rec.buf), rec.name);
-      if (rec.roles && rec.roles.length === M.tracks.length) {
-        M.tracks.forEach((t, i) => t.role = rec.roles[i]);
-        rebuildNotes();
-      }
-      // The caller keeps the buffer so it can re-save when roles change.
-      return rec.buf;
+      const buf = apply(rec);
+      if (buf) await putKey('current', { name });
+      return buf;
     } catch (e) { return null; }
   }
+
+  async function loadSavedMidi() {
+    try {
+      const cur = await getKey('current');
+      if (!cur) return null;
+      // Old format: 'current' held the record itself. Move it into the library.
+      if (cur.buf) {
+        await putKey(KEY(cur.name), { name: cur.name, buf: cur.buf, roles: cur.roles, added: Date.now() });
+        await putKey('current', { name: cur.name });
+        return apply(cur);
+      }
+      return apply(await getKey(KEY(cur.name)));
+    } catch (e) { return null; }
+  }
+
+  /** Forget one stored file. Clears the pointer too if it was current. */
+  async function deleteMidi(name) {
+    try {
+      await delKey(KEY(name));
+      const cur = await getKey('current').catch(() => null);
+      if (cur && cur.name === name) await delKey('current');
+    } catch (e) {}
+  }
+
+  /** Back to the built-in generator. The library is kept. */
   async function clearMidi() {
     M.active = false; M.name = null; M.tracks = []; M.notes = [];
-    try {
-      const db = await idb();
-      const tx = db.transaction('files', 'readwrite');
-      tx.objectStore('files').delete('current');
-    } catch (e) {}
+    try { await delKey('current'); } catch (e) {}
   }
 
   // ============================================================
@@ -1125,15 +1190,52 @@
   // steady 120km/h the accelerometer reads nothing, so intensity decays and
   // the upper layers would drop out exactly when the drive feels fastest.
   // Sustained speed has to count as energy in its own right.
+  // Speed ladder. Each breakpoint adds a layer, in mph because that is what the
+  // driver reads off the dashboard. The 10 mph tier is deliberately a whole
+  // song - pad, bass and drums - so that crawling through town is still worth
+  // listening to; the tiers above it add colour rather than substance.
+  const MPH = 0.44704;                 // mph -> m/s
+  const TIERS = [
+    { mph: 0,  roles: ['pad'] },
+    { mph: 10, roles: ['pad', 'bass', 'drums'] },
+    { mph: 20, roles: ['pad', 'bass', 'drums', 'keys'] },
+    { mph: 30, roles: ['pad', 'bass', 'drums', 'keys', 'lead'] },
+    { mph: 70, roles: ['pad', 'bass', 'drums', 'keys', 'lead'], full: true }
+  ];
+  // A layer is won at the breakpoint but not lost until 2 mph below it, so
+  // hovering on a limit does not flicker the mix in and out.
+  const TIER_HYST = 2;
+
+  // GPS is the truth when we have it. Without it, sustained aggression stands
+  // in - the accelerometer cannot see speed directly (SPEC 3.2.2b), so this is
+  // the closest proxy available.
+  function speedMph() {
+    return (typeof DS.speed === 'number' && isFinite(DS.speed))
+      ? DS.speed / MPH
+      : DS.aggression * 70;
+  }
+
+  function tierFor(mph, from) {
+    let t = from;
+    while (t < TIERS.length - 1 && mph >= TIERS[t + 1].mph) t++;
+    while (t > 0 && mph < TIERS[t].mph - TIER_HYST) t--;
+    return t;
+  }
+
   function updateRoleGains() {
-    const band = 1 - A.rest, D = DS;
-    const drive = Math.max(D.intensity, A.spd * 0.9);
+    const mph = speedMph();
+    A.tier = tierFor(mph, A.tier);
+    const tier = TIERS[A.tier];
+    const band = 1 - A.rest;
+    const on = r => tier.roles.indexOf(r) >= 0 ? 1 : 0;
     const tgt = {
+      // The pad never leaves: it is what carries a red light.
       pad:   1,
-      bass:  band,
-      drums: band * (A.feel === 'half' ? 0.55 : 1),
-      keys:  band * Math.max(0, Math.min(1, (drive - 0.12) / 0.33)),
-      lead:  band * (A.energy > (M.roleGain.lead > 0.5 ? 0.48 : 0.58) ? 1 : 0)
+      bass:  on('bass') * band,
+      // Half-feel thins the drums, except flat out, where everything is full.
+      drums: on('drums') * band * (A.feel === 'half' && !tier.full ? 0.55 : 1),
+      keys:  on('keys') * band,
+      lead:  on('lead') * band
     };
     for (const k in tgt) M.roleGain[k] += (tgt[k] - M.roleGain[k]) * 0.08;
   }
@@ -1154,7 +1256,8 @@
     pendingFeel: 'straight',
     scale: 'minor',
     rest: 1,                 // 1 = full rest (pad only), 0 = full band
-    restTarget: 1
+    restTarget: 1,
+    tier: 0                  // speed-ladder index; see TIERS in playback.js
   };
 
   const LOOKAHEAD = 0.1;     // s of future to schedule
@@ -1365,6 +1468,10 @@
     const band = 1 - A.rest;
     if (band < 0.02) return;
 
+    // Same speed ladder the MIDI layers use (see updateRoleGains): the tier
+    // decides which parts exist at all, so the two modes gate alike.
+    if (A.tier < 1) return;           // below 10 mph: pad only
+
     const D = DS;                     // current DriveState
     const intensity = D.intensity;
     const attack = 0.04 - 0.038 * Math.min(1, D.jerk / 12);
@@ -1377,8 +1484,9 @@
     if (kickOn) kick(t, 0.85 * band);
 
     // Hats: appear at straight feel and above
-    if (A.feel !== 'half') {
-      const hatEvery = A.feel === 'double' ? 1 : 2;
+    if (A.feel !== 'half' || A.tier >= 4) {
+      // Flat out (70 mph) the hats run on every 16th whatever the feel.
+      const hatEvery = (A.feel === 'double' || A.tier >= 4) ? 1 : 2;
       if (s16 % hatEvery === 0 && s16 % 4 !== 0) {
         hat(t, (0.10 + 0.14 * intensity) * band, s16 % 8 === 6);
       }
@@ -1392,16 +1500,16 @@
            (60 / A.bpm / 4) * (bassEvery * 0.85), 0.30 * band, attack);
     }
 
-    // Arp: energy, not aggression alone - see updateRoleGains.
-    if (A.energy > 0.4 && s16 % 2 === 1) {
+    // Arp: from the 20 mph breakpoint.
+    if (A.tier >= 2 && s16 % 2 === 1) {
       const idx = (step * 3) % scale.length;
       const oc = ((step >> 2) % 2) * 12;
       pluck(t, ROOT + 12 + chord.root + scale[idx] + oc,
             60 / A.bpm / 4 * 1.4, 0.085 * band * (0.5 + intensity * 0.5));
     }
 
-    // Lead: energy > 0.7, sparse long notes
-    if (A.energy > 0.7 && s16 === 0 && bar % 2 === 1) {
+    // Lead: from the 30 mph breakpoint, sparse long notes.
+    if (A.tier >= 3 && s16 === 0 && bar % 2 === 1) {
       const idx = (bar * 2) % scale.length;
       lead(t, ROOT + 24 + chord.root + scale[idx], (60 / A.bpm) * 3, 0.07 * band);
     }
@@ -1483,6 +1591,7 @@
 
       const saved = await loadSavedMidi();
       if (saved) { lastBuf = saved; renderMidiUI(); }
+      await renderMidiLib();
       renderSfUI();
 
       startAudio();
@@ -1566,6 +1675,7 @@
       lastBuf = buf;
       await saveMidi(file.name, buf, M.tracks.map(t => t.role));
       renderMidiUI();
+      await renderMidiLib();
       sfSync();                       // the needed sample set just changed
     } catch (ex) {
       err.textContent = ex.message || String(ex);
@@ -1574,8 +1684,49 @@
     e.target.value = '';
   });
   $('midiClear').addEventListener('click', async () => {
-    await clearMidi(); lastBuf = null; renderMidiUI(); sfSync();
+    await clearMidi(); lastBuf = null; renderMidiUI(); await renderMidiLib(); sfSync();
   });
+
+  // Files already uploaded, so a second one does not mean re-picking the first
+  // from the phone's file browser every time.
+  async function renderMidiLib() {
+    const box = $('midiLib');
+    const files = await listMidi();
+    if (!files.length) { box.innerHTML = ''; return; }
+    const esc = s => s.replace(/[<>&"]/g, c =>
+      ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c]));
+    box.innerHTML =
+      '<p class="hint" style="margin:0 0 6px">Saved files</p>' +
+      files.map(f => {
+        const cur = M.active && M.name === f.name;
+        return '<div style="display:grid;grid-template-columns:1fr auto auto;gap:8px;' +
+          'align-items:center;margin-bottom:6px">' +
+          '<span style="font-size:.8rem;overflow:hidden;text-overflow:ellipsis;' +
+          'white-space:nowrap' + (cur ? '' : ';color:var(--dim)') + '">' +
+          (cur ? '▶ ' : '') + esc(f.name) +
+          ' <span style="color:var(--dim)">(' + (f.bytes / 1024).toFixed(0) + ' kB)</span></span>' +
+          '<button data-load="' + esc(f.name) + '"' + (cur ? ' disabled' : '') +
+          ' style="font-size:.78rem;padding:6px 10px">' + (cur ? 'Playing' : 'Play') + '</button>' +
+          '<button data-del="' + esc(f.name) + '" title="Remove"' +
+          ' style="font-size:.78rem;padding:6px 10px">×</button></div>';
+      }).join('');
+
+    box.querySelectorAll('[data-load]').forEach(b => {
+      b.addEventListener('click', async () => {
+        const buf = await loadMidiNamed(b.dataset.load);
+        if (buf) { lastBuf = buf; renderMidiUI(); await renderMidiLib(); sfSync(); }
+      });
+    });
+    box.querySelectorAll('[data-del]').forEach(b => {
+      b.addEventListener('click', async () => {
+        const name = b.dataset.del;
+        await deleteMidi(name);
+        // Removing the file that is playing falls back to the generator.
+        if (M.active && M.name === name) { await clearMidi(); lastBuf = null; renderMidiUI(); sfSync(); }
+        await renderMidiLib();
+      });
+    });
+  }
 
   // ---------- SoundFont UI ----------
   $('sfPick').addEventListener('click', () => $('sfFile').click());

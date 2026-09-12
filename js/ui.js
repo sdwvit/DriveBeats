@@ -1,6 +1,6 @@
 import { A, applyMapping, initAudio, startAudio } from './engine.js';
 import { M, ROLES, loadParsed, parseMidi, rebuildNotes } from './midi.js';
-import { clearMidi, loadSavedMidi, saveMidi } from './midi-store.js';
+import { clearMidi, deleteMidi, listMidi, loadMidiNamed, loadSavedMidi, saveMidi } from './midi-store.js';
 import { CFG, DS, S, loadConfig, onMotion } from './motion.js';
 import { sfReset, sfSync } from './playback.js';
 import { SF, parseSf2 } from './sf2.js';
@@ -38,6 +38,7 @@ import { $, clamp, fmt } from './util.js';
 
       const saved = await loadSavedMidi();
       if (saved) { lastBuf = saved; renderMidiUI(); }
+      await renderMidiLib();
       renderSfUI();
 
       startAudio();
@@ -121,6 +122,7 @@ import { $, clamp, fmt } from './util.js';
       lastBuf = buf;
       await saveMidi(file.name, buf, M.tracks.map(t => t.role));
       renderMidiUI();
+      await renderMidiLib();
       sfSync();                       // the needed sample set just changed
     } catch (ex) {
       err.textContent = ex.message || String(ex);
@@ -129,8 +131,49 @@ import { $, clamp, fmt } from './util.js';
     e.target.value = '';
   });
   $('midiClear').addEventListener('click', async () => {
-    await clearMidi(); lastBuf = null; renderMidiUI(); sfSync();
+    await clearMidi(); lastBuf = null; renderMidiUI(); await renderMidiLib(); sfSync();
   });
+
+  // Files already uploaded, so a second one does not mean re-picking the first
+  // from the phone's file browser every time.
+  async function renderMidiLib() {
+    const box = $('midiLib');
+    const files = await listMidi();
+    if (!files.length) { box.innerHTML = ''; return; }
+    const esc = s => s.replace(/[<>&"]/g, c =>
+      ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c]));
+    box.innerHTML =
+      '<p class="hint" style="margin:0 0 6px">Saved files</p>' +
+      files.map(f => {
+        const cur = M.active && M.name === f.name;
+        return '<div style="display:grid;grid-template-columns:1fr auto auto;gap:8px;' +
+          'align-items:center;margin-bottom:6px">' +
+          '<span style="font-size:.8rem;overflow:hidden;text-overflow:ellipsis;' +
+          'white-space:nowrap' + (cur ? '' : ';color:var(--dim)') + '">' +
+          (cur ? '▶ ' : '') + esc(f.name) +
+          ' <span style="color:var(--dim)">(' + (f.bytes / 1024).toFixed(0) + ' kB)</span></span>' +
+          '<button data-load="' + esc(f.name) + '"' + (cur ? ' disabled' : '') +
+          ' style="font-size:.78rem;padding:6px 10px">' + (cur ? 'Playing' : 'Play') + '</button>' +
+          '<button data-del="' + esc(f.name) + '" title="Remove"' +
+          ' style="font-size:.78rem;padding:6px 10px">×</button></div>';
+      }).join('');
+
+    box.querySelectorAll('[data-load]').forEach(b => {
+      b.addEventListener('click', async () => {
+        const buf = await loadMidiNamed(b.dataset.load);
+        if (buf) { lastBuf = buf; renderMidiUI(); await renderMidiLib(); sfSync(); }
+      });
+    });
+    box.querySelectorAll('[data-del]').forEach(b => {
+      b.addEventListener('click', async () => {
+        const name = b.dataset.del;
+        await deleteMidi(name);
+        // Removing the file that is playing falls back to the generator.
+        if (M.active && M.name === name) { await clearMidi(); lastBuf = null; renderMidiUI(); sfSync(); }
+        await renderMidiLib();
+      });
+    });
+  }
 
   // ---------- SoundFont UI ----------
   $('sfPick').addEventListener('click', () => $('sfFile').click());

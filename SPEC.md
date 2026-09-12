@@ -328,7 +328,7 @@ have the volume high and sudden density changes must not be startling.
 | `intensity` | master low-pass cutoff | 600 Hz → 16 kHz | exponential |
 | `intensity` | percussion density | 1/4 → 1/16 notes | stepped |
 | `aggression` | scale / mode | minor pent → phrygian | stepped, hysteresis |
-| `aggression` | lead voice presence | off → on | threshold + hysteresis |
+| `speed` | which layers are audible | pad → full band | 10/20/30/70 mph ladder, hysteresis |
 | `cornering` | stereo pan of pad/lead | −0.7 → +0.7 | linear, follows sign of `aLat` |
 | `aLong` < 0 (braking) | filter dip + reverse swell | — | transient |
 | `jerk` | envelope attack time | 40 ms → 2 ms | inverse |
@@ -431,24 +431,44 @@ the real bassline to the `bass` role.
 
 | Role | Guessed from | Audible when |
 |---|---|---|
-| `drums` | MIDI channel 10 | moving (quieter at half-time feel) |
-| `bass` | lowest average pitch | moving |
+| `drums` | MIDI channel 10 | ≥ 10 mph (quieter at half-time feel) |
+| `bass` | lowest average pitch | ≥ 10 mph |
 | `pad` | longest average note among the middle tracks | **always, including at rest** |
-| `keys` | anything left over | `drive` > 0.12, ramped |
-| `lead` | highest average pitch | `energy` > 0.58, hysteresis to 0.48 |
+| `keys` | anything left over | ≥ 20 mph |
+| `lead` | highest average pitch | ≥ 30 mph |
 | `off` | — | never |
 
 If a file has no pad track, the generated pad bed stands in, so a rest is never
 silence.
 
+#### The speed ladder
+
+Layers are gated by a ladder of speed breakpoints, in **mph** because that is
+what the driver reads off the dashboard:
+
+| Breakpoint | Adds | Result |
+|---|---|---|
+| stopped | — | pad alone |
+| 10 mph | bass, drums | **a whole song** |
+| 20 mph | keys | |
+| 30 mph | lead | full arrangement |
+| 70 mph | — | everything at full: no half-feel thinning, hats on every 16th |
+
+The 10 mph tier is deliberately a complete arrangement — pad, bass and drums —
+so that crawling through town is still worth listening to. The tiers above it
+add colour, not substance. A layer is won at its breakpoint but not lost until
+2 mph below it, so hovering on a limit does not flicker the mix in and out.
+
+The same ladder gates the generator's own parts (`A.tier`), so both music
+sources behave alike.
+
 **Gating must not key on acceleration alone.** `intensity` and `aggression` are
-both derived from the accelerometer, and at a steady 120 km/h the accelerometer
+both derived from the accelerometer, and at a steady 70 mph the accelerometer
 reads nothing — so a purely acceleration-driven gate empties the mix exactly
-when the drive feels fastest. Sustained speed counts as energy in its own
-right: `drive = max(intensity, speed·0.9)` gates `keys`, and
-`energy = 0.6·speed + 0.4·aggression` gates `lead` and the generator's own arp
-and lead. With GPS unavailable, `speed` falls back to `aggression` and the
-behaviour degrades to the acceleration-only case rather than breaking.
+when the drive feels fastest. Keying the ladder on GPS speed is what makes the
+motorway case work. With GPS unavailable, sustained `aggression` stands in,
+spread over the same 0–70 mph ladder, so the behaviour degrades rather than
+breaking.
 
 **Implementation.** The Standard MIDI File parser is inline — no dependency, no
 CDN — because the app must work in a car with no signal. It handles format 0
@@ -460,8 +480,15 @@ every instrument on a single track separated only by channel, so treating a
 chunk as an instrument would collapse a whole song into one role — and because
 role detection keys on channel 10, a single percussion note would make the
 entire file play as drums.
-The file is stored in IndexedDB and reloaded automatically on the next launch,
-along with any role overrides.
+**The library.** Every uploaded file is kept in IndexedDB under `midi:<name>`,
+with `current` as a pointer to whichever one is loaded; the current file and its
+role overrides are restored automatically on the next launch. The UI lists the
+saved files so a second one can be chosen without going back to the phone's file
+browser, which is not something to be doing at the wheel. "Use built-in" drops
+back to the generator but keeps the library; removing a file is explicit, and
+removing the one that is playing falls back to the generator.
+
+Unlike the MIDI file, a soundfont is deliberately **not** persisted (§4.8).
 
 The file's own tempo map is deliberately ignored — tempo comes from driving.
 

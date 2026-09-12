@@ -18,7 +18,8 @@ import { schedulerMidi, slewBpm, updateRoleGains } from './playback.js';
     pendingFeel: 'straight',
     scale: 'minor',
     rest: 1,                 // 1 = full rest (pad only), 0 = full band
-    restTarget: 1
+    restTarget: 1,
+    tier: 0                  // speed-ladder index; see TIERS in playback.js
   };
 
   const LOOKAHEAD = 0.1;     // s of future to schedule
@@ -229,6 +230,10 @@ import { schedulerMidi, slewBpm, updateRoleGains } from './playback.js';
     const band = 1 - A.rest;
     if (band < 0.02) return;
 
+    // Same speed ladder the MIDI layers use (see updateRoleGains): the tier
+    // decides which parts exist at all, so the two modes gate alike.
+    if (A.tier < 1) return;           // below 10 mph: pad only
+
     const D = DS;                     // current DriveState
     const intensity = D.intensity;
     const attack = 0.04 - 0.038 * Math.min(1, D.jerk / 12);
@@ -241,8 +246,9 @@ import { schedulerMidi, slewBpm, updateRoleGains } from './playback.js';
     if (kickOn) kick(t, 0.85 * band);
 
     // Hats: appear at straight feel and above
-    if (A.feel !== 'half') {
-      const hatEvery = A.feel === 'double' ? 1 : 2;
+    if (A.feel !== 'half' || A.tier >= 4) {
+      // Flat out (70 mph) the hats run on every 16th whatever the feel.
+      const hatEvery = (A.feel === 'double' || A.tier >= 4) ? 1 : 2;
       if (s16 % hatEvery === 0 && s16 % 4 !== 0) {
         hat(t, (0.10 + 0.14 * intensity) * band, s16 % 8 === 6);
       }
@@ -256,16 +262,16 @@ import { schedulerMidi, slewBpm, updateRoleGains } from './playback.js';
            (60 / A.bpm / 4) * (bassEvery * 0.85), 0.30 * band, attack);
     }
 
-    // Arp: energy, not aggression alone - see updateRoleGains.
-    if (A.energy > 0.4 && s16 % 2 === 1) {
+    // Arp: from the 20 mph breakpoint.
+    if (A.tier >= 2 && s16 % 2 === 1) {
       const idx = (step * 3) % scale.length;
       const oc = ((step >> 2) % 2) * 12;
       pluck(t, ROOT + 12 + chord.root + scale[idx] + oc,
             60 / A.bpm / 4 * 1.4, 0.085 * band * (0.5 + intensity * 0.5));
     }
 
-    // Lead: energy > 0.7, sparse long notes
-    if (A.energy > 0.7 && s16 === 0 && bar % 2 === 1) {
+    // Lead: from the 30 mph breakpoint, sparse long notes.
+    if (A.tier >= 3 && s16 === 0 && bar % 2 === 1) {
       const idx = (bar * 2) % scale.length;
       lead(t, ROOT + 24 + chord.root + scale[idx], (60 / A.bpm) * 3, 0.07 * band);
     }

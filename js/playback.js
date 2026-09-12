@@ -176,15 +176,52 @@ import { MAX_SF_VOICES, SF, cachedZones, loadSamples, sfVoice } from './sf2.js';
   // steady 120km/h the accelerometer reads nothing, so intensity decays and
   // the upper layers would drop out exactly when the drive feels fastest.
   // Sustained speed has to count as energy in its own right.
+  // Speed ladder. Each breakpoint adds a layer, in mph because that is what the
+  // driver reads off the dashboard. The 10 mph tier is deliberately a whole
+  // song - pad, bass and drums - so that crawling through town is still worth
+  // listening to; the tiers above it add colour rather than substance.
+  const MPH = 0.44704;                 // mph -> m/s
+  const TIERS = [
+    { mph: 0,  roles: ['pad'] },
+    { mph: 10, roles: ['pad', 'bass', 'drums'] },
+    { mph: 20, roles: ['pad', 'bass', 'drums', 'keys'] },
+    { mph: 30, roles: ['pad', 'bass', 'drums', 'keys', 'lead'] },
+    { mph: 70, roles: ['pad', 'bass', 'drums', 'keys', 'lead'], full: true }
+  ];
+  // A layer is won at the breakpoint but not lost until 2 mph below it, so
+  // hovering on a limit does not flicker the mix in and out.
+  const TIER_HYST = 2;
+
+  // GPS is the truth when we have it. Without it, sustained aggression stands
+  // in - the accelerometer cannot see speed directly (SPEC 3.2.2b), so this is
+  // the closest proxy available.
+  function speedMph() {
+    return (typeof DS.speed === 'number' && isFinite(DS.speed))
+      ? DS.speed / MPH
+      : DS.aggression * 70;
+  }
+
+  function tierFor(mph, from) {
+    let t = from;
+    while (t < TIERS.length - 1 && mph >= TIERS[t + 1].mph) t++;
+    while (t > 0 && mph < TIERS[t].mph - TIER_HYST) t--;
+    return t;
+  }
+
   function updateRoleGains() {
-    const band = 1 - A.rest, D = DS;
-    const drive = Math.max(D.intensity, A.spd * 0.9);
+    const mph = speedMph();
+    A.tier = tierFor(mph, A.tier);
+    const tier = TIERS[A.tier];
+    const band = 1 - A.rest;
+    const on = r => tier.roles.indexOf(r) >= 0 ? 1 : 0;
     const tgt = {
+      // The pad never leaves: it is what carries a red light.
       pad:   1,
-      bass:  band,
-      drums: band * (A.feel === 'half' ? 0.55 : 1),
-      keys:  band * Math.max(0, Math.min(1, (drive - 0.12) / 0.33)),
-      lead:  band * (A.energy > (M.roleGain.lead > 0.5 ? 0.48 : 0.58) ? 1 : 0)
+      bass:  on('bass') * band,
+      // Half-feel thins the drums, except flat out, where everything is full.
+      drums: on('drums') * band * (A.feel === 'half' && !tier.full ? 0.55 : 1),
+      keys:  on('keys') * band,
+      lead:  on('lead') * band
     };
     for (const k in tgt) M.roleGain[k] += (tgt[k] - M.roleGain[k]) * 0.08;
   }
