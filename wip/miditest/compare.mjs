@@ -5,7 +5,7 @@ const ROOT = path.resolve(import.meta.dirname, '../..');
 const TMP = process.env.T || os.tmpdir();
 import { refNotes } from './ref.mjs';
 const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
-const a = html.indexOf('  function parseMidi(buf) {');
+const a = html.indexOf('  // General MIDI program names,');
 const b = html.indexOf('  function loadParsed(', a);
 fs.writeFileSync(path.join(TMP, '_pm.mjs'), html.slice(a, b) + '\nexport {parseMidi, assignRoles};\n');
 const { parseMidi } = await import('file://' + path.join(TMP, '_pm.mjs') + '?v=' + Date.now());

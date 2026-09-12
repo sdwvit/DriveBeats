@@ -260,34 +260,88 @@
 
   const ROLES = ['drums', 'bass', 'pad', 'keys', 'lead', 'off'];
 
+  // General MIDI program names, for labelling a track whose own name is
+  // missing or useless.
+  const GM = ('Acoustic Grand Piano,Bright Acoustic Piano,Electric Grand Piano,Honky-tonk Piano,' +
+    'Electric Piano 1,Electric Piano 2,Harpsichord,Clavi,Celesta,Glockenspiel,Music Box,' +
+    'Vibraphone,Marimba,Xylophone,Tubular Bells,Dulcimer,Drawbar Organ,Percussive Organ,' +
+    'Rock Organ,Church Organ,Reed Organ,Accordion,Harmonica,Tango Accordion,Acoustic Guitar,' +
+    'Acoustic Guitar,Electric Guitar,Electric Guitar,Electric Guitar,Overdriven Guitar,' +
+    'Distortion Guitar,Guitar Harmonics,Acoustic Bass,Finger Bass,Pick Bass,Fretless Bass,' +
+    'Slap Bass 1,Slap Bass 2,Synth Bass 1,Synth Bass 2,Violin,Viola,Cello,Contrabass,' +
+    'Tremolo Strings,Pizzicato Strings,Orchestral Harp,Timpani,String Ensemble 1,' +
+    'String Ensemble 2,Synth Strings 1,Synth Strings 2,Choir Aahs,Voice Oohs,Synth Voice,' +
+    'Orchestra Hit,Trumpet,Trombone,Tuba,Muted Trumpet,French Horn,Brass Section,Synth Brass 1,' +
+    'Synth Brass 2,Soprano Sax,Alto Sax,Tenor Sax,Baritone Sax,Oboe,English Horn,Bassoon,' +
+    'Clarinet,Piccolo,Flute,Recorder,Pan Flute,Blown Bottle,Shakuhachi,Whistle,Ocarina,' +
+    'Square Lead,Sawtooth Lead,Calliope Lead,Chiff Lead,Charang Lead,Voice Lead,Fifths Lead,' +
+    'Bass + Lead,New Age Pad,Warm Pad,Polysynth Pad,Choir Pad,Bowed Pad,Metallic Pad,Halo Pad,' +
+    'Sweep Pad,Rain FX,Soundtrack FX,Crystal FX,Atmosphere FX,Brightness FX,Goblins FX,' +
+    'Echoes FX,Sci-Fi FX,Sitar,Banjo,Shamisen,Koto,Kalimba,Bag pipe,Fiddle,Shanai,Tinkle Bell,' +
+    'Agogo,Steel Drums,Woodblock,Taiko Drum,Melodic Tom,Synth Drum,Reverse Cymbal,' +
+    'Guitar Fret Noise,Breath Noise,Seashore,Bird Tweet,Telephone Ring,Helicopter,Applause,' +
+    'Gunshot').split(',');
+
+  // Authors routinely type their credits into the track-name meta, one line
+  // per track, so a whole song ends up labelled "Composed By: ...", "e-mail
+  // me", "==============". Those tracks are ordinary music and must never be
+  // dropped - doing so deletes the song - but the text is no use as a label,
+  // so fall back to the instrument. A real part name is short; anything long,
+  // wordy, punctuation-only or carrying contact details is credits.
+  const CREDITS = /@|https?:|www\.|\bcompos|\barrang|\bsequenc|\bmade with\b|\bcopyright\b|\(c\)|\be-?mail\b|\bquestions\b|\bcomments\b|\bmidi by\b|\bby:/i;
+  // Anything naming an instrument or a part is a real label however long it
+  // runs - "Clean Rhythm Guitar" and "Backing Keyboards" are not credits.
+  const PART = /\b(guitar|bass|drum|drums|piano|key|keys|keyboard|organ|string|strings|violin|viola|cello|horn|brass|trumpet|trombone|tuba|sax|flute|clarinet|oboe|bassoon|piccolo|choir|vocal|vocals|voice|lead|rhythm|pad|synth|snare|kick|hat|hihat|cymbal|tom|toms|perc|percussion|harp|bell|bells|chime|marimba|vibes|xylophone|timpani|acoustic|electric|melody|harmony|counter|arp|pluck|clav|accordion|banjo|sitar|whistle|recorder|ocarina|fx|solo|backing|intro|outro|verse|chorus|bridge)\b/i;
+  function looksLikeCredits(s) {
+    const t = (s || '').trim();
+    if (!t) return true;
+    if (!/[a-z0-9]/i.test(t)) return true;             // "==========", "- - -"
+    if (CREDITS.test(t)) return true;
+    if (PART.test(t)) return false;
+    return t.length > 16 || t.split(/\s+/).length > 3;  // a title or a sentence
+  }
+
+  function trackLabel(name, bank, program, n) {
+    if (!looksLikeCredits(name)) return name;
+    if (bank === 128) return 'Drums';
+    return GM[program] || ('Track ' + n);
+  }
+
   // ---- parser ----------------------------------------------------
   function parseMidi(buf) {
     const v = new DataView(buf);
     let p = 0;
     const u32 = () => { const x = v.getUint32(p); p += 4; return x; };
     const u16 = () => { const x = v.getUint16(p); p += 2; return x; };
-    const u8  = () => v.getUint8(p++);
+    // Reads past the end yield 0 rather than throwing: a few real files run a
+    // byte or two past the last track's declared length, and a RangeError
+    // there would reject a song that is otherwise entirely fine.
+    const u8  = () => (p < buf.byteLength ? v.getUint8(p++) : (p++, 0));
     const str = n => { let s = ''; for (let i = 0; i < n; i++) s += String.fromCharCode(u8()); return s; };
     const vlq = () => {
-      let x = 0, b;
-      do { b = u8(); x = (x << 7) | (b & 0x7f); } while (b & 0x80);
+      let x = 0, b, n = 0;
+      do { b = u8(); x = (x << 7) | (b & 0x7f); } while ((b & 0x80) && ++n < 4);
       return x;
     };
 
     if (str(4) !== 'MThd') throw new Error('Not a MIDI file (no MThd header).');
     const hlen = u32();
     u16();                                   // format
-    const ntrk = u16();
+    u16();                                   // track count - a hint only, see below
     const div = u16();
     p += hlen - 6;
     if (div & 0x8000) throw new Error('SMPTE timecode MIDI files are not supported.');
 
+    // The header's track count is only a hint - some exporters write 0 there
+    // and still emit perfectly good MTrk chunks - so walk to the end of the
+    // file instead. Chunks of any other type are skipped by their length
+    // rather than ending the file, which is what the spec asks for.
     const tracks = [];
-    for (let t = 0; t < ntrk; t++) {
-      if (p >= buf.byteLength) break;
-      if (str(4) !== 'MTrk') break;
+    while (p + 8 <= buf.byteLength) {
+      const id = str(4);
       const len = u32();
-      const end = p + len;
+      const end = Math.min(p + len, buf.byteLength);
+      if (id !== 'MTrk') { p = end; continue; }
       let tick = 0, running = 0;
       const open = {};                       // key -> note being held
       const notes = [];
@@ -298,8 +352,13 @@
 
       while (p < end) {
         tick += vlq();
+        if (p >= end) break;
         let st = u8();
-        if (st < 0x80) { p--; st = running; } else running = st;
+        // Only voice messages (0x80-0xef) may set running status. Letting meta
+        // and SysEx set it too makes the next running-status event decode as
+        // whichever system message came last, derailing the rest of the track.
+        if (st < 0x80) { if (!running) break; p--; st = running; }
+        else if (st < 0xf0) running = st;
         const type = st & 0xf0, ch = st & 0x0f;
 
         if (st === 0xff) {                   // meta
@@ -307,19 +366,26 @@
           if (mt === 0x03 && !name) { const q = p; name = str(ml); p = q + ml; }
           else p += ml;
         } else if (st === 0xf0 || st === 0xf7) {
-          p += vlq();
+          // Read the length out first: `p += vlq()` evaluates p before vlq()
+          // advances it, so the bytes the length field occupied are dropped,
+          // p lands short, and every later event in the track is misread.
+          const sl = vlq();
+          p += sl;
         } else if (type === 0x90 || type === 0x80) {
           const n = u8(), vel = u8();
           const key = ch * 128 + n;
           if (type === 0x90 && vel > 0) {
-            open[key] = { midi: n, vel, start: tick, ch,
-                          prog: prog[ch], bank: ch === 9 ? 128 : bankM[ch] };
-          } else if (open[key]) {
-            const o = open[key];
+            // A key is often struck again while it is still sounding - Doom
+            // and Stonekeep files do it constantly - so keep a queue per key
+            // and let each note-off close the oldest. A single slot per key
+            // silently dropped whichever note was already held.
+            (open[key] || (open[key] = [])).push({ midi: n, vel, start: tick, ch,
+                          prog: prog[ch], bank: ch === 9 ? 128 : bankM[ch] });
+          } else if (open[key] && open[key].length) {
+            const o = open[key].shift();
             notes.push({ midi: o.midi, vel: o.vel, start: o.start,
                          dur: Math.max(1, tick - o.start), ch: o.ch,
                          prog: o.prog, bank: o.bank });
-            delete open[key];
           }
         } else if (type === 0xb0) {
           const cc = u8(), val = u8();
@@ -327,15 +393,20 @@
         } else if (type === 0xa0 || type === 0xe0) { p += 2; }
         else if (type === 0xc0) { prog[ch] = u8(); }
         else if (type === 0xd0) { p += 1; }
-        else { p = end; }
+        else if (st === 0xf2) { p += 2; }
+        else if (st === 0xf1 || st === 0xf3) { p += 1; }
+        // 0xf4-0xfe carry no data bytes. They have no business being in a
+        // file, but a handful of these genuinely contain them, and giving up
+        // on the track over one threw away everything after it.
       }
       p = end;
 
       // Anything still held at end-of-track gets a nominal length.
       for (const k in open) {
-        const o = open[k];
-        notes.push({ midi: o.midi, vel: o.vel, start: o.start, dur: div, ch: o.ch,
-                     prog: o.prog, bank: o.bank });
+        for (const o of open[k]) {
+          notes.push({ midi: o.midi, vel: o.vel, start: o.start, dur: div, ch: o.ch,
+                       prog: o.prog, bank: o.bank });
+        }
       }
       if (notes.length) {
         notes.sort((a, b) => a.start - b.start);
@@ -349,10 +420,9 @@
           const tally = {};
           cn.forEach(n => { const k = n.bank + ':' + n.prog; tally[k] = (tally[k]||0)+1; });
           const top = Object.keys(tally).sort((a,b) => tally[b]-tally[a])[0].split(':');
+          const label = trackLabel(name, +top[0], +top[1], tracks.length + 1);
           tracks.push({
-            name: chans.length > 1
-              ? (name ? name + ' ch' + (ch + 1) : 'Ch ' + (ch + 1))
-              : (name || ('Track ' + (tracks.length + 1))),
+            name: chans.length > 1 ? label + ' ch' + (ch + 1) : label,
             notes: cn, isDrum: ch === 9, avgPitch: avg, role: null,
             bank: +top[0], program: +top[1]
           });
@@ -1001,6 +1071,16 @@
     SF.bytes = 0; SF.progress = 0; SF.status = '';
   }
 
+  // Slew towards the target tempo, +/-4 BPM per bar. Self-healing: a single
+  // non-finite value would otherwise stick in A.bpm forever, because NaN
+  // survives both the subtraction and the clamp.
+  function slewBpm() {
+    if (!isFinite(A.pendingBpm)) A.pendingBpm = 112;
+    if (!isFinite(A.bpm)) { A.bpm = A.pendingBpm; return; }
+    const d = A.pendingBpm - A.bpm;
+    A.bpm += Math.max(-4, Math.min(4, d));
+  }
+
   function schedulerMidi() {
     const horizon = A.ac.currentTime + LOOKAHEAD;
     if (!M.curTime || M.curTime < A.ac.currentTime) M.curTime = A.ac.currentTime + 0.06;
@@ -1014,8 +1094,7 @@
         M.idx++;
       }
       if (M.curTick % bar === 0) {
-        const d = A.pendingBpm - A.bpm;
-        A.bpm += Math.max(-4, Math.min(4, d));
+        slewBpm();
         A.feel = A.pendingFeel;
         // Without a pad track there would be nothing left at rest, so the
         // generated bed stands in.
@@ -1138,8 +1217,7 @@
       scheduleStep(A.step, A.nextTime);
       // Tempo and feel changes land on bar lines only (spec 4.4).
       if (A.step % 16 === 0) {
-        const d = A.pendingBpm - A.bpm;
-        A.bpm += Math.max(-4, Math.min(4, d));   // slew-limit +/-4 BPM per bar
+        slewBpm();                             // slew-limit +/-4 BPM per bar
         A.feel = A.pendingFeel;
       }
       A.nextTime += 60 / A.bpm / 4;
@@ -1324,10 +1402,10 @@
     const t = A.ac.currentTime, D = DS;
 
     // Tempo from speed; falls back to aggression when GPS is unavailable.
-    const spd = (D.speed !== null && D.speed !== undefined)
-      ? Math.min(1, D.speed / 33)          // 0..1 over 0..120 km/h
+    const spd = (typeof D.speed === 'number' && isFinite(D.speed))
+      ? Math.min(1, Math.max(0, D.speed / 33))   // 0..1 over 0..120 km/h
       : D.aggression;
-    A.pendingBpm = 104 + 28 * spd;
+    A.pendingBpm = 104 + 28 * (isFinite(spd) ? spd : 0);
 
     // Feel carries the big energy jumps, not BPM (spec 4.4).
     const energy = 0.6 * spd + 0.4 * D.aggression;
@@ -1420,7 +1498,12 @@
     if (!navigator.geolocation) { S.gps.status = 'unsupported'; return; }
     S.gps.status = 'acquiring';
     navigator.geolocation.watchPosition(
-      p => { S.gps.status='ok'; S.gps.speed = p.coords.speed; },
+      // coords.speed is documented as null when unknown, but real devices also
+      // hand back NaN. NaN survives every later arithmetic step and ends up in
+      // A.bpm, which poisons every note duration, so reject it at the door.
+      p => { S.gps.status='ok';
+             const sp = p.coords.speed;
+             S.gps.speed = (typeof sp === 'number' && isFinite(sp) && sp >= 0) ? sp : null; },
       e => { S.gps.status='error'; },
       { enableHighAccuracy:true, maximumAge:1000, timeout:15000 });
   }

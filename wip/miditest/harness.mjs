@@ -10,7 +10,7 @@ function grab(startMarker, endMarker) {
   if (a < 0 || b < 0) throw new Error('marker missing: ' + startMarker);
   return html.slice(a, b);
 }
-const src = grab('  function parseMidi(buf) {', '  function loadParsed(');
+const src = grab('  // General MIDI program names,', '  function loadParsed(');
 fs.writeFileSync(path.join(TMP, '_pm.mjs'), src + '\nexport {parseMidi, assignRoles};\n');
 const { parseMidi, assignRoles } = await import('file://' + path.join(TMP, '_pm.mjs') + '?v=' + Date.now());
 
