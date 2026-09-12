@@ -551,14 +551,20 @@
   }
 
   // Layer gating: this is where driving decides what you hear.
+  //
+  // Gating on acceleration alone would empty the mix on a motorway - at a
+  // steady 120km/h the accelerometer reads nothing, so intensity decays and
+  // the upper layers would drop out exactly when the drive feels fastest.
+  // Sustained speed has to count as energy in its own right.
   function updateRoleGains() {
     const band = 1 - A.rest, D = DS;
+    const drive = Math.max(D.intensity, A.spd * 0.9);
     const tgt = {
       pad:   1,
       bass:  band,
       drums: band * (A.feel === 'half' ? 0.55 : 1),
-      keys:  band * Math.max(0, Math.min(1, (D.intensity - 0.12) / 0.33)),
-      lead:  band * (D.aggression > (M.roleGain.lead > 0.5 ? 0.48 : 0.58) ? 1 : 0)
+      keys:  band * Math.max(0, Math.min(1, (drive - 0.12) / 0.33)),
+      lead:  band * (A.energy > (M.roleGain.lead > 0.5 ? 0.48 : 0.58) ? 1 : 0)
     };
     for (const k in tgt) M.roleGain[k] += (tgt[k] - M.roleGain[k]) * 0.08;
   }
@@ -571,6 +577,7 @@
     panBus: null, drumBus: null,
     running: false,
     bpm: 112, pendingBpm: 112,
+    spd: 0, energy: 0,
     step: 0,                 // 0..127  (8 bars of 16ths)
     nextTime: 0,
     timer: null,
@@ -815,16 +822,16 @@
            (60 / A.bpm / 4) * (bassEvery * 0.85), 0.30 * band, attack);
     }
 
-    // Arp: aggression > 0.4
-    if (D.aggression > 0.4 && s16 % 2 === 1) {
+    // Arp: energy, not aggression alone - see updateRoleGains.
+    if (A.energy > 0.4 && s16 % 2 === 1) {
       const idx = (step * 3) % scale.length;
       const oc = ((step >> 2) % 2) * 12;
       pluck(t, ROOT + 12 + chord.root + scale[idx] + oc,
             60 / A.bpm / 4 * 1.4, 0.085 * band * (0.5 + intensity * 0.5));
     }
 
-    // Lead: aggression > 0.7, sparse long notes
-    if (D.aggression > 0.7 && s16 === 0 && bar % 2 === 1) {
+    // Lead: energy > 0.7, sparse long notes
+    if (A.energy > 0.7 && s16 === 0 && bar % 2 === 1) {
       const idx = (bar * 2) % scale.length;
       lead(t, ROOT + 24 + chord.root + scale[idx], (60 / A.bpm) * 3, 0.07 * band);
     }
@@ -844,6 +851,7 @@
 
     // Feel carries the big energy jumps, not BPM (spec 4.4).
     const energy = 0.6 * spd + 0.4 * D.aggression;
+    A.spd = spd; A.energy = energy;
     const cur = A.pendingFeel;
     if (energy < (cur === 'half' ? 0.22 : 0.16)) A.pendingFeel = 'half';
     else if (energy > (cur === 'double' ? 0.58 : 0.68)) A.pendingFeel = 'double';

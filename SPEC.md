@@ -434,12 +434,21 @@ the real bassline to the `bass` role.
 | `drums` | MIDI channel 10 | moving (quieter at half-time feel) |
 | `bass` | lowest average pitch | moving |
 | `pad` | longest average note among the middle tracks | **always, including at rest** |
-| `keys` | anything left over | `intensity` > 0.12, ramped |
-| `lead` | highest average pitch | `aggression` > 0.58, hysteresis to 0.48 |
+| `keys` | anything left over | `drive` > 0.12, ramped |
+| `lead` | highest average pitch | `energy` > 0.58, hysteresis to 0.48 |
 | `off` | — | never |
 
 If a file has no pad track, the generated pad bed stands in, so a rest is never
 silence.
+
+**Gating must not key on acceleration alone.** `intensity` and `aggression` are
+both derived from the accelerometer, and at a steady 120 km/h the accelerometer
+reads nothing — so a purely acceleration-driven gate empties the mix exactly
+when the drive feels fastest. Sustained speed counts as energy in its own
+right: `drive = max(intensity, speed·0.9)` gates `keys`, and
+`energy = 0.6·speed + 0.4·aggression` gates `lead` and the generator's own arp
+and lead. With GPS unavailable, `speed` falls back to `aggression` and the
+behaviour degrades to the acceleration-only case rather than breaking.
 
 **Implementation.** The Standard MIDI File parser is inline — no dependency, no
 CDN — because the app must work in a car with no signal. It handles format 0
