@@ -439,6 +439,12 @@ silence.
 CDN — because the app must work in a car with no signal. It handles format 0
 and 1, running status, note-on-with-velocity-0 as note-off, and notes left
 hanging at end of track; SMPTE timecode division is rejected with a message.
+
+Tracks are split **by MIDI channel**, not by MTrk chunk. Format 0 files carry
+every instrument on a single track separated only by channel, so treating a
+chunk as an instrument would collapse a whole song into one role — and because
+role detection keys on channel 10, a single percussion note would make the
+entire file play as drums.
 The file is stored in IndexedDB and reloaded automatically on the next launch,
 along with any role overrides.
 

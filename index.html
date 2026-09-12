@@ -315,10 +315,20 @@
       }
       if (notes.length) {
         notes.sort((a, b) => a.start - b.start);
-        const isDrum = notes.some(n => n.ch === 9);
-        const avg = notes.reduce((s, n) => s + n.midi, 0) / notes.length;
-        tracks.push({ name: name || ('Track ' + (tracks.length + 1)),
-                      notes, isDrum, avgPitch: avg, role: null });
+        // Format 0 files carry every instrument on a single track, separated
+        // only by channel, so split on channel before assigning roles -
+        // otherwise one channel-10 note makes the whole song percussion.
+        const chans = [...new Set(notes.map(n => n.ch))].sort((a, b) => a - b);
+        for (const ch of chans) {
+          const cn = notes.filter(n => n.ch === ch);
+          const avg = cn.reduce((s, n) => s + n.midi, 0) / cn.length;
+          tracks.push({
+            name: chans.length > 1
+              ? (name ? name + ' ch' + (ch + 1) : 'Ch ' + (ch + 1))
+              : (name || ('Track ' + (tracks.length + 1))),
+            notes: cn, isDrum: ch === 9, avgPitch: avg, role: null
+          });
+        }
       }
     }
     if (!tracks.length) throw new Error('No notes found in that file.');
