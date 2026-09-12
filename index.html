@@ -388,7 +388,7 @@
 
   // Pad is the one voice that never stops — it carries the rest state.
   let padNodes = null;
-  function padChord(t, chord, dur) {
+  function padChord(t, chord, dur, bright) {
     if (padNodes) {
       try {
         padNodes.g.gain.cancelScheduledValues(t);
@@ -398,9 +398,12 @@
     }
     const g = A.ac.createGain(), f = A.ac.createBiquadFilter();
     f.type = 'lowpass'; f.Q.value = 1.5;
-    f.frequency.setValueAtTime(500, t);
-    f.frequency.linearRampToValueAtTime(1800, t + dur * 0.6);
-    f.frequency.linearRampToValueAtTime(700, t + dur);
+    // At full rest the bed sits at 180-380Hz: felt more than heard. The sweep
+    // opens up only as the arrangement comes back in.
+    const b = Math.max(0, Math.min(1, bright === undefined ? 1 : bright));
+    f.frequency.setValueAtTime(180 + 320 * b, t);
+    f.frequency.linearRampToValueAtTime(380 + 1420 * b, t + dur * 0.6);
+    f.frequency.linearRampToValueAtTime(220 + 480 * b, t + dur);
     const osc = [];
     chord.tones.forEach(tn => {
       [-0.08, 0.08].forEach(det => {
@@ -427,7 +430,7 @@
 
     // Pad: new chord every 2 bars, always present.
     if (s16 === 0 && bar % 2 === 0) {
-      padChord(t, chord, (60 / A.bpm) * 4 * 2);
+      padChord(t, chord, (60 / A.bpm) * 4 * 2, 1 - A.rest);
     }
 
     // `band` is how much of the full arrangement is audible. At rest it
@@ -503,10 +506,11 @@
     else if (A.scale === 'pentatonic' && ag > 0.73) A.scale = 'phrygian';
     else if (A.scale === 'phrygian' && ag < 0.67) A.scale = 'pentatonic';
 
-    // Master cutoff: exponential, dipped by braking.
-    const base = 600 * Math.pow(26, D.intensity);
+    // Master cutoff: exponential, dipped by braking, muffled further at rest.
+    const base = 340 * Math.pow(38, D.intensity);
     const dip = 1 - 0.55 * D.brake;
-    A.lp.frequency.setTargetAtTime(Math.max(300, base * dip), t, 0.12);
+    const calm = 1 - 0.45 * A.rest;
+    A.lp.frequency.setTargetAtTime(Math.max(200, base * dip * calm), t, 0.12);
 
     // Cornering pans; it does not transpose.
     if (A.panBus.pan) A.panBus.pan.setTargetAtTime(
