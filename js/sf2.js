@@ -121,21 +121,33 @@
     // --- zone building ---
     const zonesOf = (bagArr, gens, bagStart, bagEnd, idOp) => {
       const out = [];
-      let global = {};
+      let global = null;
       for (let b = bagStart; b < bagEnd; b++) {
         const gs = bagArr[b].gen, ge = (b+1 < bagArr.length) ? bagArr[b+1].gen : gens.length;
-        const z = { gens:{}, keyLo:0, keyHi:127, velLo:0, velHi:127, id:null };
+        // hasKeyRange/hasVelRange record whether the zone *stated* a range. A
+        // zone that explicitly says 0-127 must keep 0-127 rather than inherit
+        // the global's narrower range, and a global range starting at key 0
+        // (very common - a whole-keyboard global) must still be inherited.
+        const z = { gens:{}, keyLo:0, keyHi:127, velLo:0, velHi:127, id:null,
+                    hasKeyRange:false, hasVelRange:false };
         for (let gi = gs; gi < ge; gi++) {
           const g = gens[gi];
-          if (g.op === GEN.keyRange) { z.keyLo = g.lo; z.keyHi = g.hi; }
-          else if (g.op === GEN.velRange) { z.velLo = g.lo; z.velHi = g.hi; }
+          if (g.op === GEN.keyRange) { z.keyLo = g.lo; z.keyHi = g.hi; z.hasKeyRange = true; }
+          else if (g.op === GEN.velRange) { z.velLo = g.lo; z.velHi = g.hi; z.hasVelRange = true; }
           else if (g.op === idOp) z.id = g.u;
           else z.gens[g.op] = g.s;
         }
-        if (z.id === null) { global = z; continue; }       // global zone
-        z.gens = Object.assign({}, global.gens, z.gens);
-        if (global.keyLo !== undefined && z.keyLo === 0 && z.keyHi === 127 && global.keyLo !== 0) {
-          z.keyLo = global.keyLo; z.keyHi = global.keyHi;
+        if (z.id === null) {
+          // Only the FIRST bag of a list may be global (SF2 spec 7.3/7.7). A
+          // later id-less zone is malformed - adopting it as a new global would
+          // let junk generators leak into every zone after it, so drop it.
+          if (b === bagStart) global = z;
+          continue;
+        }
+        if (global) {
+          z.gens = Object.assign({}, global.gens, z.gens);
+          if (!z.hasKeyRange && global.hasKeyRange) { z.keyLo = global.keyLo; z.keyHi = global.keyHi; }
+          if (!z.hasVelRange && global.hasVelRange) { z.velLo = global.velLo; z.velHi = global.velHi; }
         }
         out.push(z);
       }
@@ -230,11 +242,21 @@
     return ids;
   }
 
+  // A sample we can actually slice out of this file's smpl chunk.
+  //
+  // shdr.type bit 15 marks a ROM sample: its start/end address the synth's own
+  // wavetable ROM, not the file, so slicing the smpl chunk at those offsets
+  // yields whatever unrelated PCM happens to live there - noise at full volume.
+  // The end*2 check catches the same thing in fonts with a truncated or lying
+  // shdr, where the read would run off the end of the chunk.
+  const sampleUsable = sm =>
+    !!sm && sm.end > sm.start && !(sm.type & 0x8000) && sm.end * 2 <= SF.smplLen;
+
   // Merge nearby byte ranges so a few hundred samples become a few dozen reads.
   function sampleRuns(ids, gap) {
     const list = [...ids]
       .map(id => ({ id, sm: SF.samples[id] }))
-      .filter(x => x.sm && x.sm.end > x.sm.start)
+      .filter(x => sampleUsable(x.sm))
       .sort((a, b) => a.sm.start - b.sm.start);
     const runs = [];
     for (const x of list) {
@@ -293,6 +315,17 @@
   const tc2s = tc => Math.pow(2, tc / 1200);            // timecents -> seconds
   const cb2g = cb => Math.pow(10, -cb / 200);           // centibels of attenuation -> gain
 
+  // A stable small id per destination node, so a note can be identified by
+  // (key, time, destination) without the caller having to pass a note id.
+  const destTokens = new WeakMap();
+  let nextDestToken = 1;
+  function destToken(dest) {
+    if (!dest || typeof dest !== 'object') return 0;
+    let id = destTokens.get(dest);
+    if (id === undefined) { id = nextDestToken++; destTokens.set(dest, id); }
+    return id;
+  }
+
   function sfVoice(ctx, z, key, vel, t, dur, gain, dest) {
     const s = SF.buffers.get(z.sampleId);
     if (!s) return false;
@@ -315,13 +348,25 @@
     src.buffer = s.buf;
     src.playbackRate.value = rate;
 
+    // Address offsets (spec 8.1.2). These are per-zone corrections on top of the
+    // shdr defaults; ignoring them gave every zone that shares a sample the same
+    // loop, which is exactly what the generators exist to override.
+    const addr = (op, coarse) => gv(z, op, 0) + 32768 * gv(z, coarse, 0);
+    const loopStart = s.loopStart + addr(GEN.startloopAddrsOffset, GEN.startloopAddrsCoarse);
+    const loopEnd = s.loopEnd + addr(GEN.endloopAddrsOffset, GEN.endloopAddrsCoarse);
+    const startFrame = Math.max(0, addr(GEN.startAddrsOffset, GEN.startAddrsCoarse));
+
     const mode = gv(z, GEN.sampleModes, 0) & 3;
-    let loopEnd = s.loopEnd;
-    if ((mode === 1 || mode === 3) && s.loopEnd > s.loopStart && s.loopStart >= 0 &&
-        s.loopEnd <= s.frames) {
+    // Mode 3 is "loop while depressed, then play the remainder". A
+    // BufferSource's `loop` cannot be switched off at a scheduled time, so
+    // honouring the loop would mean the remainder - the release tail that is
+    // the whole point of mode 3 - never plays at all. Playing straight through
+    // is mode 3 with zero loop repeats: the tail is intact and there is no
+    // audible loop seam. Only mode 1 (loop forever) actually loops.
+    if (mode === 1 && loopEnd > loopStart && loopStart >= 0 && loopEnd <= s.frames) {
       src.loop = true;
-      src.loopStart = s.loopStart / s.buf.sampleRate;
-      src.loopEnd = s.loopEnd / s.buf.sampleRate;
+      src.loopStart = loopStart / s.buf.sampleRate;
+      src.loopEnd = loopEnd / s.buf.sampleRate;
     }
 
     // Volume envelope. Defaults are -12000tc (~1ms) for every stage.
@@ -344,8 +389,20 @@
     g.gain.setValueAtTime(peak, t0 + attack + hold);
     g.gain.exponentialRampToValueAtTime(sust, t0 + attack + hold + decay);
     // Release starts at note-off regardless of where decay had got to.
-    g.gain.cancelScheduledValues(off);
-    g.gain.setValueAtTime(Math.max(1e-4, envAt(t0, attack, hold, decay, peak, sust, off)), off);
+    //
+    // cancelScheduledValues(off) DELETES any ramp whose end time is >= off
+    // instead of truncating it, so the param holds its pre-ramp value: a 2s
+    // decay under a 1s note sat flat at peak and then stepped down, and a 1s
+    // attack under a 0.1s note sat at 1e-4 and then stepped up. Both are
+    // clicks. cancelAndHoldAtTime truncates properly; where it is missing,
+    // pinning the computed level at `off` first gives the same shape.
+    if (g.gain.cancelAndHoldAtTime) {
+      g.gain.cancelAndHoldAtTime(off);
+    } else {
+      g.gain.setValueAtTime(Math.max(1e-4, envAt(t0, attack, hold, decay, peak, sust, off)), off);
+      // Cancel *after* the pin - cancelling at `off` would remove it too.
+      g.gain.cancelScheduledValues(off + 1e-6);
+    }
     g.gain.exponentialRampToValueAtTime(1e-4, off + rel);
 
     const panV = Math.max(-1, Math.min(1, gv(z, GEN.pan, 0) / 500));
@@ -362,7 +419,12 @@
     const ec = gv(z, GEN.exclusiveClass, 0);
     if (ec > 0) {
       const prev = SF.excl.get(ec);
-      if (prev && prev.until > t) {
+      // A stereo note is two zones voiced at the same instant, so without a
+      // per-note token the second zone's registration choked the first 12ms in
+      // and the note played back mono-and-clipped. One note is one (key, time,
+      // destination) - that is derivable here, so the caller stays unchanged.
+      const note = key + '@' + t + '#' + destToken(dest);
+      if (prev && prev.until > t && prev.note !== note) {
         try {
           prev.g.gain.cancelScheduledValues(t);
           prev.g.gain.setValueAtTime(Math.max(1e-4, prev.g.gain.value), t);
@@ -370,7 +432,7 @@
           prev.src.stop(t + 0.02);
         } catch (e) { /* already stopped */ }
       }
-      SF.excl.set(ec, { g, src, until: off + rel });
+      SF.excl.set(ec, { g, src, until: off + rel, note });
     }
 
     // onended must be wired before start/stop, or the voice count never
@@ -378,7 +440,11 @@
     SF.voices++;
     let done = false;
     src.onended = () => { if (!done) { done = true; SF.voices--; } };
-    src.start(t);
+    // startAddrsOffset moves the zone's first frame; a negative or out-of-range
+    // offset would make start() throw and lose the voice, so only a clean one
+    // is used.
+    if (startFrame > 0 && startFrame < s.frames) src.start(t, startFrame / s.buf.sampleRate);
+    else src.start(t);
     src.stop(off + rel + 0.02);
     return true;
   }
@@ -388,11 +454,14 @@
   function envAt(t0, attack, hold, decay, peak, sust, at) {
     const d = at - t0;
     if (d <= 0) return 1e-4;
-    if (d < attack) return Math.max(1e-4, peak * (d / attack));
+    // The attack that was actually scheduled is an exponentialRamp from 1e-4 to
+    // peak, not a linear one - reading it linearly put the release ramp far
+    // above the real level and made short notes jump on note-off.
+    if (d < attack) return Math.max(1e-4, 1e-4 * Math.pow(peak / 1e-4, d / attack));
     if (d < attack + hold) return peak;
     const dd = d - attack - hold;
     if (dd >= decay || decay <= 0) return sust;
     return peak * Math.pow(sust / peak, dd / decay);
   }
 
-export { GEN, MAX_SF_VOICES, SF, cachedZones, cb2g, envAt, findPreset, gv, loadSamples, neededSamples, parseSf2, presetCache, presetFor, rd, sampleRuns, sfVoice, tc2s, zonesForNote };
+export { GEN, MAX_SF_VOICES, SF, cachedZones, cb2g, envAt, findPreset, gv, loadSamples, neededSamples, parseSf2, presetCache, presetFor, rd, sampleRuns, sampleUsable, sfVoice, tc2s, zonesForNote };

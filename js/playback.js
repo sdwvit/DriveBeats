@@ -126,6 +126,12 @@ import { MAX_SF_VOICES, SF, cachedZones, loadSamples, sfVoice } from './sf2.js';
   }
 
   function sfReset() {
+    // voices only ever comes down in an onended callback, and a context that
+    // is discarded or closed never fires them. Two font swaps while playing
+    // used to leave the count above MAX_SF_VOICES for good, after which every
+    // note was dropped - and dropped as "handled", so not even the synth
+    // fallback ran. The app went silent with nothing to show for it.
+    SF.voices = 0;
     SF.file = null; SF.name = null; SF.ready = false; SF.loading = false;
     SF.presets = []; SF.instruments = []; SF.samples = [];
     SF.buffers.clear(); SF.zoneCache.clear(); SF.excl.clear();
@@ -142,6 +148,27 @@ import { MAX_SF_VOICES, SF, cachedZones, loadSamples, sfVoice } from './sf2.js';
     A.bpm += Math.max(-4, Math.min(4, d));
   }
 
+  // At most this many notes per layer on any one tick. Per layer rather than
+  // overall so a dense drum fill cannot push the bass line out.
+  const MAX_PER_ROLE = 4;
+
+  function thin(due) {
+    if (due.length <= MAX_PER_ROLE) return due;
+    const byRole = new Map();
+    for (const n of due) {
+      const tr = M.tracks[n.trackIdx];
+      const r = tr ? tr.role : 'off';
+      const a = byRole.get(r) || (byRole.set(r, []), byRole.get(r));
+      a.push(n);
+    }
+    const keep = [];
+    for (const [, a] of byRole) {
+      if (a.length > MAX_PER_ROLE) a.sort((x, y) => y.vel - x.vel);
+      for (let i = 0; i < Math.min(a.length, MAX_PER_ROLE); i++) keep.push(a[i]);
+    }
+    return keep;
+  }
+
   function schedulerMidi() {
     const horizon = A.ac.currentTime + LOOKAHEAD;
     if (!M.curTime || M.curTime < A.ac.currentTime) M.curTime = A.ac.currentTime + 0.06;
@@ -150,10 +177,17 @@ import { MAX_SF_VOICES, SF, cachedZones, loadSamples, sfVoice } from './sf2.js';
     let guard = 0;
 
     while (M.curTime < horizon && guard++ < 20000) {
+      // Everything landing on this tick is collected before any of it is
+      // played, so the pile-up can be thinned. Descent's credits puts 19 notes
+      // inside 50ms; with two or three oscillators each that is a wall the
+      // limiter answers by ducking the whole mix, and the loudest note of the
+      // chord is what the driver actually hears anyway.
+      let due = null;
       while (M.idx < M.notes.length && M.notes[M.idx].start <= M.curTick) {
-        playMidiNote(M.notes[M.idx], M.curTime);
+        (due || (due = [])).push(M.notes[M.idx]);
         M.idx++;
       }
+      if (due) for (const n of thin(due)) playMidiNote(n, M.curTime);
       if (M.curTick % bar === 0) {
         slewBpm();
         A.feel = A.pendingFeel;
@@ -226,4 +260,4 @@ import { MAX_SF_VOICES, SF, cachedZones, loadSamples, sfVoice } from './sf2.js';
     for (const k in tgt) M.roleGain[k] += (tgt[k] - M.roleGain[k]) * 0.08;
   }
 
-export { SF_GAIN, TIERS, drumHit, padNote, playMidiNote, schedulerMidi, sfChanged, sfNote, sfReset, sfSync, slewBpm, snare, updateRoleGains };
+export { MAX_PER_ROLE, SF_GAIN, TIERS, drumHit, padNote, playMidiNote, schedulerMidi, sfChanged, sfNote, sfReset, sfSync, slewBpm, snare, thin, updateRoleGains };

@@ -90,6 +90,11 @@ import { schedulerMidi, slewBpm, updateRoleGains } from './playback.js';
   function scheduler() {
     if (!A.ac || A.ac.state !== 'running') return;
     if (M.active && M.notes.length) return schedulerMidi();
+    // A backgrounded tab or a phone call freezes nextTime while currentTime
+    // runs on, and every past-dated start() fires at once on resume: ten
+    // seconds away is ~19 kicks and basses on one instant, straight into the
+    // limiter. The MIDI scheduler already re-bases; this one has to as well.
+    if (A.nextTime < A.ac.currentTime) A.nextTime = A.ac.currentTime + 0.06;
     while (A.nextTime < A.ac.currentTime + LOOKAHEAD) {
       scheduleStep(A.step, A.nextTime);
       // Tempo and feel changes land on bar lines only (spec 4.4).
@@ -104,12 +109,26 @@ import { schedulerMidi, slewBpm, updateRoleGains } from './playback.js';
 
   // ---- voices ----------------------------------------------------
 
+  // A MIDI file is full of notes shorter than a synth attack: in Descent's
+  // credits 55% of the bass and 74% of the drums are under 40ms. Ramping to
+  // peak over a fixed 40ms means those notes are still climbing out of 0.0001
+  // when they end, so they are inaudible - which is why half the song appeared
+  // not to play. The attack is therefore capped at a third of the note, and
+  // every voice gets MIN_TAIL of release whatever its written length, so a
+  // staccato note is short rather than silent.
+  const MIN_TAIL = 0.08;
+
   function env(node, t, a, d, peak) {
     const g = node.gain;
+    const atk = Math.max(0.002, Math.min(a, d * 0.3));
+    const dec = Math.max(MIN_TAIL, d);
+    const pk = Math.max(0.0002, peak);
     g.cancelScheduledValues(t);
     g.setValueAtTime(0.0001, t);
-    g.exponentialRampToValueAtTime(Math.max(0.0002, peak), t + a);
-    g.exponentialRampToValueAtTime(0.0001, t + a + d);
+    g.exponentialRampToValueAtTime(pk, t + atk);
+    g.exponentialRampToValueAtTime(0.0001, t + atk + dec);
+    // How long the caller must keep the node alive for the tail to be heard.
+    return atk + dec;
   }
 
   function kick(t, gain) {
@@ -143,21 +162,31 @@ import { schedulerMidi, slewBpm, updateRoleGains } from './playback.js';
     o.type = 'sawtooth';
     o.frequency.value = mtof(midi);
     f.type = 'lowpass'; f.Q.value = 6;
+    // The sweep has to fit inside the note. A fixed 0.06s peak on a 0.036s
+    // note put the ramps out of order, and an automation curve whose target
+    // times run backwards is not the filter envelope anyone intended.
+    const life = env(g, t, attack, dur, gain);
+    const peak = t + Math.min(0.06, life * 0.3);
     f.frequency.setValueAtTime(220, t);
-    f.frequency.exponentialRampToValueAtTime(900, t + 0.06);
-    f.frequency.exponentialRampToValueAtTime(200, t + dur);
-    env(g, t, attack, dur, gain);
+    f.frequency.exponentialRampToValueAtTime(900, peak);
+    f.frequency.exponentialRampToValueAtTime(200, t + life);
     o.connect(f); f.connect(g); g.connect(A.master);
-    o.start(t); o.stop(t + dur + 0.05);
+    o.start(t); o.stop(t + life + 0.05);
   }
 
   function pluck(t, midi, dur, gain, type) {
-    const o = A.ac.createOscillator(), g = A.ac.createGain();
+    const o = A.ac.createOscillator(), g = A.ac.createGain(), f = A.ac.createBiquadFilter();
     o.type = type || 'square';
     o.frequency.value = mtof(midi);
-    env(g, t, 0.004, dur, gain);
-    o.connect(g); g.connect(A.panBus);
-    o.start(t); o.stop(t + dur + 0.05);
+    // A bare square at pitch is the harshest thing in the mix over road noise.
+    // A lowpass that tracks the note and closes with it reads as a plucked
+    // string instead, and keeps stacked keys parts from turning into buzz.
+    f.type = 'lowpass'; f.Q.value = 1;
+    const life = env(g, t, 0.004, dur, gain);
+    f.frequency.setValueAtTime(Math.min(9000, mtof(midi) * 7), t);
+    f.frequency.exponentialRampToValueAtTime(Math.max(400, mtof(midi) * 2), t + life);
+    o.connect(f); f.connect(g); g.connect(A.panBus);
+    o.start(t); o.stop(t + life + 0.05);
   }
 
   function lead(t, midi, dur, gain) {
@@ -176,6 +205,9 @@ import { schedulerMidi, slewBpm, updateRoleGains } from './playback.js';
     env(g, t, 0.08, dur, gain);
     f.connect(g); g.connect(A.panBus);
     lfo.start(t); lfo.stop(t + dur + 0.2);
+    // The oscillators above are stopped at t+dur+0.2, which is the tail env()
+    // guarantees for a note this long; a lead note is never short enough for
+    // MIN_TAIL to outrun it.
   }
 
   // Pad is the one voice that never stops — it carries the rest state.
@@ -321,4 +353,4 @@ import { schedulerMidi, slewBpm, updateRoleGains } from './playback.js';
     updateRoleGains();
   }
 
-export { A, CHORDS, LOOKAHEAD, ROOT, SCALES, TICK, applyMapping, bass, env, hat, initAudio, kick, lead, mtof, padChord, padNodes, pluck, scheduleStep, scheduler, startAudio };
+export { A, CHORDS, LOOKAHEAD, MIN_TAIL, ROOT, SCALES, TICK, applyMapping, bass, env, hat, initAudio, kick, lead, mtof, padChord, padNodes, pluck, scheduleStep, scheduler, startAudio };

@@ -100,6 +100,10 @@
     const div = u16();
     p += hlen - 6;
     if (div & 0x8000) throw new Error('SMPTE timecode MIDI files are not supported.');
+    // A broken exporter writing 0 here used to poison every time downstream:
+    // bar length 0, lengthTicks NaN, and a scheduler that advances by Infinity
+    // seconds and then never plays another note - silence with no error.
+    if (!div) throw new Error('That file declares no time division.');
 
     // The header's track count is only a hint - some exporters write 0 there
     // and still emit perfectly good MTrk chunks - so walk to the end of the
@@ -132,7 +136,11 @@
 
         if (st === 0xff) {                   // meta
           const mt = u8(), ml = vlq();
-          if (mt === 0x03 && !name) { const q = p; name = str(ml); p = q + ml; }
+          // ml is a 4-byte VLQ, so up to 268M. u8() reads past the end as 0,
+          // so an unclamped str(ml) builds a quarter-billion-character string
+          // and freezes the tab; one mis-synced running-status byte landing on
+          // FF 03 is enough to trigger it.
+          if (mt === 0x03 && !name) { const q = p; name = str(Math.min(ml, end - q)); p = q + ml; }
           else p += ml;
         } else if (st === 0xf0 || st === 0xf7) {
           // Read the length out first: `p += vlq()` evaluates p before vlq()
@@ -207,7 +215,11 @@
   // then distributes the remainder by character - dumping everything spare
   // into one role would make the layer gating meaningless.
   function assignRoles(tracks, tpq) {
-    const maxN = Math.max.apply(null, tracks.map(t => t.notes.length));
+    // Measured against the melodic tracks only: a 6000-hit drum track would
+    // otherwise set the bar so high that every real part looks insubstantial,
+    // and a four-note stab could then be picked as the bass.
+    const melN = tracks.filter(t => !t.isDrum).map(t => t.notes.length);
+    const maxN = Math.max.apply(null, melN.length ? melN : tracks.map(t => t.notes.length));
     tracks.forEach(t => {
       t.avgDur = t.notes.reduce((s, n) => s + n.dur, 0) / t.notes.length;
       // A handful of notes is usually a stab or a drone, not a main voice.
@@ -237,11 +249,23 @@
     }
 
     // Remaining tracks join whichever layer matches their character.
-    mel.forEach(t => {
+    //
+    // Absolute pitch cutoffs do not survive contact with real files: Descent's
+    // credits has five tracks averaging MIDI 32-47, so "below 48 is bass" put
+    // 2144 of its 3891 notes on one saw bass - five parts playing the same
+    // voice at once, which is mud rather than a bass line. Rank each track
+    // within this song instead, and hard-cap the bass, because stacked
+    // sawtooths at the bottom are the one pile-up that no compressor rescues.
+    const MAX_BASS = 2;
+    const order = mel.slice().sort((a, b) => a.avgPitch - b.avgPitch);
+    const span = Math.max(1, order.length - 1);
+    let bassCount = mel.filter(t => t.role === 'bass').length;
+    order.forEach((t, i) => {
       if (t.role) return;
-      if (t.avgDur >= tpq * 2) t.role = 'pad';
-      else if (t.avgPitch < 48) t.role = 'bass';
-      else if (t.avgPitch >= 72) t.role = 'lead';
+      if (t.avgDur >= tpq * 2) { t.role = 'pad'; return; }
+      const frac = i / span;
+      if (frac < 0.34 && bassCount < MAX_BASS) { t.role = 'bass'; bassCount++; }
+      else if (frac > 0.75) t.role = 'lead';
       else t.role = 'keys';
     });
   }
@@ -263,12 +287,20 @@
       t.notes.forEach(n => M.notes.push({ ...n, trackIdx: i }));
     });
     M.notes.sort((a, b) => a.start - b.start);
-    M.lengthTicks = M.notes.length
-      ? Math.max(...M.notes.map(n => n.start + n.dur)) : M.tpq * 4;
+    // Not Math.max(...notes): the spread passes one argument per note, and a
+    // dense file runs past the engine's argument limit and throws a stack
+    // overflow that surfaces as a bogus parse error.
+    let end = 0;
+    for (const n of M.notes) { const e = n.start + n.dur; if (e > end) end = e; }
+    if (!end) end = M.tpq * 4;
     // Round the loop out to a whole bar so it rejoins the grid cleanly.
     const bar = M.tpq * 4;
-    M.lengthTicks = Math.ceil(M.lengthTicks / bar) * bar;
-    M.idx = 0; M.curTick = 0;
+    M.lengthTicks = Math.ceil(end / bar) * bar;
+    // Changing one track's layer must not restart the song under the driver,
+    // so keep the playhead and re-seek the note index to it.
+    if (M.curTick >= M.lengthTicks) M.curTick = 0;
+    M.idx = 0;
+    while (M.idx < M.notes.length && M.notes[M.idx].start <= M.curTick) M.idx++;
   }
 
 export { CREDITS, GM, M, PART, ROLES, ROLE_LABELS, assignRoles, loadParsed, looksLikeCredits, parseMidi, rebuildNotes, trackLabel };

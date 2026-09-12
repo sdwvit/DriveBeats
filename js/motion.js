@@ -39,6 +39,10 @@ import { clamp } from './util.js';
     if (S.lastT) {
       dt = (now - S.lastT)/1000;
       if (dt > MAX_DT) { S.dropped++; S.lastT = now; return; }
+      // Android batches sensor events, so two can carry the same timestamp.
+      // dt = 0 makes the jerk term 0/0, and NaN survives both the smoothing
+      // and clamp() - aggression would stay NaN for the rest of the drive.
+      if (!(dt > 0)) return;
       S.rate = S.rate ? S.rate*0.9 + (1/dt)*0.1 : 1/dt;
     }
     S.lastT = now; S.count++;
