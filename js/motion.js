@@ -24,6 +24,12 @@ import { clamp } from './util.js';
   // left removes it, and a real pull away is over in seconds - far too quick
   // for a minute-long average to follow.
   const BIAS_TC = 60;
+  // Intensity is the fast channel - it is what opens the master filter, so it
+  // is the first thing a driver hears. Rising and falling at the same rate
+  // meant a shared compromise: quick enough to answer the throttle made it
+  // chatter on every pothole. Asymmetric, a push in the back lands almost at
+  // once and the decay still settles smoothly.
+  const INT_UP = 0.12, INT_DOWN = 0.6;
   // Sustained effort, in seconds. This was 30, which is most of a town trip:
   // the arrangement was still deciding what it thought about the first corner
   // when the drive ended.
@@ -237,7 +243,8 @@ import { clamp } from './util.js';
     updateSpeed(dt, rawLong * CFG.signFwd, now);
 
     const inst = clamp(Math.hypot(aLong, aLat)/5, 0, 1);
-    DS.intensity += (inst - DS.intensity) * (1 - Math.exp(-dt/0.5));      // fast, ~0.5s
+    DS.intensity += (inst - DS.intensity) *
+                    (1 - Math.exp(-dt / (inst > DS.intensity ? INT_UP : INT_DOWN)));
     // Sustained speed is effort too. Without this term a motorway cruise - no
     // acceleration at all, by definition - decays to the same aggression as a
     // car parked at the kerb.
@@ -327,4 +334,4 @@ import { clamp } from './util.js';
     g.status = 'ok';
   }
 
-export { AGGR_TC, BIAS_TC, CFG, DS, DR_DECAY, GPS_STALE, MAX_DT, S, carAxes, gpsAccel, loadConfig, onFix, onMotion, resetMotion };
+export { AGGR_TC, BIAS_TC, INT_DOWN, INT_UP, CFG, DS, DR_DECAY, GPS_STALE, MAX_DT, S, carAxes, gpsAccel, loadConfig, onFix, onMotion, resetMotion };

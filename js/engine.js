@@ -20,7 +20,8 @@ import { SF } from './sf2.js';
     scale: 'minor',
     rest: 1,                 // 1 = full rest (pad only), 0 = full band
     restTarget: 1,
-    tier: 0                  // speed-ladder index; see TIERS in playback.js
+    tier: 0,                 // speed-ladder index; see TIERS in playback.js
+    lastMap: 0               // when applyMapping last ran, for real-time smoothing
   };
 
   const LOOKAHEAD = 0.1;     // s of future to schedule
@@ -432,9 +433,33 @@ import { SF } from './sf2.js';
 
   // ---- continuous parameter mapping (M5) ---------------------------
 
+  // How fast the mix answers the road, in seconds. These used to be per-tick
+  // constants, which quietly meant "whatever rate the UI happens to call us
+  // at" - changing the interval changed the feel of the car with no sign that
+  // it had. They are time constants now, applied against the real elapsed
+  // time, so the numbers below mean what they say.
+  //
+  // Each is asymmetric for the same reason: coming in has to be immediate,
+  // because the driver caused it and is waiting for it; going out has to be
+  // gentle, because nobody asked for it and a layer snapping off is a fault.
+  const RESP = {
+    restBack: 0.35,   // pulling away: pad-only back to the full band
+    restTo:   3.0,    // stopping: band back down to the pad
+    layerIn:  0.25,   // a rung of the speed ladder arriving
+    layerOut: 0.8,    // and leaving
+    cutoff:   0.05    // the master filter chasing intensity
+  };
+  const toward = (cur, tgt, tc, dt) => cur + (tgt - cur) * (1 - Math.exp(-dt / Math.max(1e-3, tc)));
+
   function applyMapping() {
     if (!A.ac || !A.running) return;
     const t = A.ac.currentTime, D = DS;
+    // Real elapsed time, not an assumed tick: a backgrounded tab, a slow phone
+    // or a changed interval would otherwise silently retune every response
+    // above. Clamped, because a tab that was asleep for a minute must not
+    // teleport the mix on its first wake.
+    const dt = Math.min(0.5, Math.max(0.001, t - (A.lastMap || t - 0.04)));
+    A.lastMap = t;
 
     // Tempo from speed; falls back to aggression when GPS is unavailable.
     const spd = (typeof D.speed === 'number' && isFinite(D.speed))
@@ -461,22 +486,18 @@ import { SF } from './sf2.js';
     const base = 340 * Math.pow(38, D.intensity);
     const dip = 1 - 0.55 * D.brake;
     const calm = 1 - 0.45 * A.rest;
-    A.lp.frequency.setTargetAtTime(Math.max(200, base * dip * calm), t, 0.12);
+    A.lp.frequency.setTargetAtTime(Math.max(200, base * dip * calm), t, RESP.cutoff);
 
     // Cornering pans; it does not transpose.
     if (A.panBus.pan) A.panBus.pan.setTargetAtTime(
       Math.max(-0.7, Math.min(0.7, D.aLat / 6)), t, 0.25);
 
-    // Rest: the band comes back fast and leaves slowly. Pulling away from a
-    // junction should be answered within a second or so - at the old symmetric
-    // rate it took the better part of ten, by which point the driver is already
-    // up to speed and wondering why nothing happened - while a stop fades out
-    // gently rather than chopping the arrangement off at the lights.
+    // Rest: the band comes back fast and leaves slowly.
     A.restTarget = D.stationary ? 1 : 0;
-    const k = A.restTarget > A.rest ? 0.03 : 0.12;
-    A.rest += (A.restTarget - A.rest) * k;
+    A.rest = toward(A.rest, A.restTarget,
+                    A.restTarget > A.rest ? RESP.restTo : RESP.restBack, dt);
 
-    updateRoleGains();
+    updateRoleGains(dt);
   }
 
-export { A, CHORDS, CUT, ROLE_PAN, busFor, LOOKAHEAD, MIN_TAIL, ROOT, SCALES, TICK, applyMapping, bass, buildBuses, env, hat, initAudio, kick, lead, mtof, padChord, padNodes, pluck, scheduleStep, scheduler, silenceAll, startAudio, stopAudio, toggleAudio };
+export { A, CHORDS, CUT, RESP, ROLE_PAN, busFor, LOOKAHEAD, MIN_TAIL, ROOT, SCALES, TICK, applyMapping, bass, buildBuses, env, hat, initAudio, kick, lead, mtof, padChord, padNodes, pluck, scheduleStep, scheduler, silenceAll, startAudio, stopAudio, toggleAudio };

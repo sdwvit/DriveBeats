@@ -1,4 +1,4 @@
-import { A, CHORDS, LOOKAHEAD, bass, busFor, env, hat, kick, lead, mtof, padChord, pluck } from './engine.js';
+import { A, CHORDS, LOOKAHEAD, RESP, bass, busFor, env, hat, kick, lead, mtof, padChord, pluck } from './engine.js';
 import { M } from './midi.js';
 import { DS } from './motion.js';
 import { MAX_SF_VOICES, SF, cachedZones, loadSamples, sfVoice } from './sf2.js';
@@ -269,7 +269,7 @@ import { MAX_SF_VOICES, SF, cachedZones, loadSamples, sfVoice } from './sf2.js';
     return t;
   }
 
-  function updateRoleGains() {
+  function updateRoleGains(dt = 0.04) {
     const mph = speedMph();
     A.tier = tierFor(mph, A.tier);
     const tier = TIERS[A.tier];
@@ -284,7 +284,14 @@ import { MAX_SF_VOICES, SF, cachedZones, loadSamples, sfVoice } from './sf2.js';
       keys:  on('keys') * band,
       lead:  on('lead') * band
     };
-    for (const k in tgt) M.roleGain[k] += (tgt[k] - M.roleGain[k]) * 0.08;
+    // A layer the speed ladder has just won arrives in a quarter of a second;
+    // one it has lost takes most of a second to go. The old flat 0.08 a tick
+    // was 1.2s either way, which is long enough that a driver pulling onto a
+    // faster road is already there before the part that answers it is.
+    for (const k in tgt) {
+      const tc = tgt[k] > M.roleGain[k] ? RESP.layerIn : RESP.layerOut;
+      M.roleGain[k] += (tgt[k] - M.roleGain[k]) * (1 - Math.exp(-dt / tc));
+    }
   }
 
 export { MAX_PER_ROLE, SF_GAIN, TIERS, TIER_HYST, speedMph, tierFor, drumHit, padNote, playMidiNote, schedulerMidi, sfChanged, sfNote, sfReset, sfSync, slewBpm, snare, thin, updateRoleGains };

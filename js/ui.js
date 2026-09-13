@@ -75,7 +75,10 @@ import { $, clamp, fmt } from './util.js';
 
       startAudio();
       renderTransport();
-      setInterval(applyMapping, 100);
+      // 25Hz rather than 10: the smoothing above is time-based now, so this
+      // only sets how finely the road is sampled, and a tenth of a second of
+      // quantisation is audible on a sharp throttle.
+      setInterval(applyMapping, 40);
       setInterval(render, 80);
 
       setTimeout(() => { if (S.count === 0) $('noMotion').hidden = false; }, 1500);
