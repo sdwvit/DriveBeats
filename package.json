@@ -8,7 +8,6 @@
     "test": "node --test test/*.test.mjs",
     "corpus": "node test/corpus.mjs",
     "serve": "python3 -m http.server 8000",
-    "replay": "node test/replay.mjs",
-    "export": "node tools/export-mid.mjs"
+    "replay": "node test/replay.mjs"
   }
 }

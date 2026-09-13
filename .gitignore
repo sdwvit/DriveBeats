@@ -3,6 +3,3 @@
 node_modules/
 .claude/
 *.webm
-
-# generated demo exports
-drivebeats*.mid
