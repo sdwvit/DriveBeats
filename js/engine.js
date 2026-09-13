@@ -8,7 +8,7 @@ import { SF } from './sf2.js';
   // ============================================================
   const A = {
     ac: null, master: null, lp: null, comp: null, limiter: null,
-    panBus: null, drumBus: null, roleBus: null,
+    panBus: null, drumBus: null, roleBus: null, pump: null,
     running: false,
     bpm: 112, pendingBpm: 112,
     spd: 0, energy: 0,
@@ -33,27 +33,76 @@ import { SF } from './sf2.js';
     pentatonic: [0, 3, 5, 7, 10],
     phrygian:   [0, 1, 3, 5, 7, 8, 10]
   };
-  // i - VI - III - VII, two bars each
+  // i - VI - VII - v, two bars each. The old i - VI - III - VII resolved: the
+  // III is the relative major and the ear hears it as the sun coming out,
+  // which is the one thing this music must not do. Ending on a *minor* v
+  // instead of a major VII leaves the loop unresolved, so eight bars later it
+  // starts again because it has to rather than because it ran out.
   const CHORDS = [
     { root: 0,  tones: [0, 3, 7] },
     { root: 8,  tones: [0, 4, 7] },
-    { root: 3,  tones: [0, 4, 7] },
-    { root: 10, tones: [0, 4, 7] }
+    { root: 10, tones: [0, 4, 7] },
+    { root: 7,  tones: [0, 3, 7] }
   ];
 
   const mtof = m => 440 * Math.pow(2, (m - 69) / 12);
+
+  // Saturation. Clean oscillators are the reason a synth line can be loud and
+  // still sound like nothing; the weight in this music is distortion, not
+  // level. A soft-clip curve adds the harmonics that survive a car speaker and
+  // road noise, and it compresses as a side effect, so a saturated bass sits
+  // still in the mix at a volume a clean one could not hold.
+  //
+  // The curves are cached by amount: building a 1024-point table per note, at
+  // sixteen notes a bar, is real work for a phone to do in the audio thread's
+  // shadow, and there are only a handful of distinct amounts in practice.
+  const shapers = new Map();
+  function satCurve(amount) {
+    const k = Math.round(amount * 20) / 20;
+    let c = shapers.get(k);
+    if (c) return c;
+    const n = 1024;
+    c = new Float32Array(n);
+    const drive = 1 + 40 * k;
+    for (let i = 0; i < n; i++) {
+      const x = (i / (n - 1)) * 2 - 1;
+      c[i] = Math.tanh(x * drive) / Math.tanh(drive);
+    }
+    shapers.set(k, c);
+    return c;
+  }
+
+  /** A soft-clipper, or null when there is nothing to gain from one. */
+  function saturator(amount) {
+    if (!A.ac.createWaveShaper || amount <= 0.01) return null;
+    const ws = A.ac.createWaveShaper();
+    ws.curve = satCurve(amount);
+    ws.oversample = '4x';
+    return ws;
+  }
   const clamp01 = v => Math.max(0, Math.min(1, isFinite(v) ? v : 1));
 
-  // Everything audible hangs off A.master: the pan bus, the drum bus, and the
-  // generated bass, which connects to it directly. That makes master the one
-  // node retiring cuts, so the buses are built as a set.
+  // Everything audible hangs off A.master: the pump bus (everything but the
+  // drums), the drum bus, and the generated bass, which goes through the pump.
+  // That makes master the one node retiring cuts, so the buses are built as a
+  // set.
   function buildBuses() {
     A.master = A.ac.createGain();
     A.master.gain.value = 0.8;
     A.master.connect(A.lp);
 
+    // Sidechain. In this music the kick and the bass occupy the same register
+    // and the bass never stops, so without ducking the two fight and the low
+    // end turns to mud - the kick stops reading as a hit and starts reading as
+    // a thickening. Every kick dips everything that is not a drum and lets it
+    // swell back over the rest of the beat; that swell is the pulse the whole
+    // genre is built on, and it is what makes a line of flat 8ths breathe.
+    A.pump = A.ac.createGain();
+    A.pump.gain.value = 1;
+    A.pump.connect(A.master);
+
     A.panBus = A.ac.createStereoPanner ? A.ac.createStereoPanner() : A.ac.createGain();
-    A.panBus.connect(A.master);
+    A.panBus.connect(A.pump);
 
     A.drumBus = A.ac.createGain();
     A.drumBus.connect(A.master);
@@ -242,14 +291,66 @@ import { SF } from './sf2.js';
     return atk + dec;
   }
 
-  function kick(t, gain) {
+  // How far a kick pulls everything else down, and how long the recovery
+  // takes. Deep enough to hear as movement, short enough that the bass is
+  // already back up by the following 8th.
+  const PUMP_DEPTH = 0.42;
+  const PUMP_BACK = 0.085;
+
+  function duck(t, amount) {
+    if (!A.pump || !A.pump.gain.setTargetAtTime) return;
+    const depth = Math.max(0, Math.min(1, amount));
+    A.pump.gain.setValueAtTime(1 - PUMP_DEPTH * depth, t);
+    A.pump.gain.setTargetAtTime(1, t + 0.01, PUMP_BACK);
+  }
+
+  function kick(t, gain, pump = 1) {
     const o = A.ac.createOscillator(), g = A.ac.createGain();
     o.type = 'sine';
-    o.frequency.setValueAtTime(120, t);
-    o.frequency.exponentialRampToValueAtTime(45, t + 0.09);
+    // A longer pitch fall than a techno kick: the drop is the body of the
+    // sound here, and 45Hz is where it wants to land and stay a moment.
+    o.frequency.setValueAtTime(135, t);
+    o.frequency.exponentialRampToValueAtTime(48, t + 0.11);
     env(g, t, 0.002, 0.32, gain);
     o.connect(g); g.connect(A.drumBus);
     o.start(t); o.stop(t + 0.4);
+    duck(t, pump * Math.min(1, gain / 0.6));
+  }
+
+  // Backbeat. Three short noise bursts a few milliseconds apart, then a
+  // longer, darker tail - the gated-reverb clap the genre is named after,
+  // built the cheap way because a convolver per hit is not affordable here.
+  //
+  // The whole thing is rendered into one buffer with its envelope baked in,
+  // rather than as four scheduled bursts. Four bursts is twelve nodes, twice a
+  // bar, on a phone that is also running the map: the clap on its own was a
+  // third of everything the generator created.
+  function clap(t, gain, tail = 1) {
+    const len = Math.ceil(A.ac.sampleRate * (0.03 + 0.18 * tail));
+    const buf = A.ac.createBuffer(1, len, A.ac.sampleRate);
+    const d = buf.getChannelData(0);
+    const sr = A.ac.sampleRate;
+    // Three transients, then the tail. The transients are what reads as a
+    // clap; the tail is what reads as a big empty room in 1984.
+    const hits = [[0, 0.7, 0.02], [0.011, 0.85, 0.02], [0.023, 1, 0.03]];
+    for (let i = 0; i < len; i++) {
+      const tt = i / sr;
+      let a = 0;
+      for (const [at, amp, dur] of hits) {
+        if (tt >= at && tt < at + dur) a += amp * (1 - (tt - at) / dur);
+      }
+      // The tail decays exponentially and is cut off short - a gate, not a
+      // reverb, which is the difference the name is pointing at.
+      if (tt >= 0.03) a += 0.5 * tail * Math.exp(-(tt - 0.03) / (0.055 * tail));
+      d[i] = (Math.random() * 2 - 1) * a;
+    }
+    const n = A.ac.createBufferSource(); n.buffer = buf;
+    const bp = A.ac.createBiquadFilter();
+    bp.type = 'bandpass'; bp.frequency.value = 1500; bp.Q.value = 0.9;
+    const g = A.ac.createGain();
+    g.gain.setValueAtTime(Math.max(0.0002, gain), t);
+    n.connect(bp); bp.connect(g); g.connect(A.drumBus);
+    n.start(t); n.stop(t + buf.duration + 0.02);
   }
 
   function hat(t, gain, open) {
@@ -276,7 +377,10 @@ import { SF } from './sf2.js';
     const o = A.ac.createOscillator(), g = A.ac.createGain(), f = A.ac.createBiquadFilter();
     o.type = 'sawtooth';
     o.frequency.value = mtof(midi);
-    f.type = 'lowpass'; f.Q.value = 6;
+    // Resonance is the character control, not the cutoff: a lazy filter with
+    // a lot of Q is the sound of a plucked analogue bass, and pushing it with
+    // velocity means a hard note squelches where a soft one only thuds.
+    f.type = 'lowpass'; f.Q.value = 4 + 8 * clamp01(bright);
     // The sweep has to fit inside the note. A fixed 0.06s peak on a 0.036s
     // note put the ramps out of order, and an automation curve whose target
     // times run backwards is not the filter envelope anyone intended.
@@ -286,9 +390,25 @@ import { SF } from './sf2.js';
     f.frequency.setValueAtTime(220, t);
     f.frequency.exponentialRampToValueAtTime(top, peak);
     f.frequency.exponentialRampToValueAtTime(200, t + life);
-    // Straight to master, not the pan bus: cornering must not swing the low end.
-    o.connect(f); f.connect(g); g.connect(A.master);
+    // Straight to the pump, not the pan bus: cornering must not swing the low
+    // end, but the kick must still duck it. The saw goes through the clipper
+    // on the way, so the harder the note the dirtier it is - the filter
+    // envelope decides the shape and the drive decides the menace.
+    o.connect(f);
+    const sat = saturator(0.25 + 0.5 * clamp01(bright));
+    if (sat) { f.connect(sat); sat.connect(g); } else { f.connect(g); }
+    g.connect(A.pump || A.master);
     o.start(t); o.stop(t + life + 0.05);
+
+    // A sine an octave down, under the filter rather than through it. The
+    // resonant saw carries the note; this carries the weight, which is the
+    // half of the sound a phone speaker throws away and a car does not.
+    const sub = A.ac.createOscillator(), sg = A.ac.createGain();
+    sub.type = 'sine';
+    sub.frequency.value = mtof(midi - 12);
+    env(sg, t, Math.max(attack, 0.008), dur, gain * 0.55);
+    sub.connect(sg); sg.connect(A.pump || A.master);
+    sub.start(t); sub.stop(t + life + 0.05);
   }
 
   function pluck(t, midi, dur, gain, type, bright = 1) {
@@ -310,19 +430,31 @@ import { SF } from './sf2.js';
 
   function lead(t, midi, dur, gain, bright = 1) {
     const g = A.ac.createGain(), f = A.ac.createBiquadFilter();
-    f.type = 'lowpass'; f.frequency.value = 1500 + 2400 * clamp01(bright); f.Q.value = 2;
+    f.type = 'lowpass'; f.frequency.value = 1500 + 2400 * clamp01(bright);
+    // Resonant, not just open: the peak at the cutoff is the whistle that
+    // carries a lead line over a mix this dense.
+    f.Q.value = 3.5;
     const lfo = A.ac.createOscillator(), lg = A.ac.createGain();
-    lfo.frequency.value = 5.2; lg.gain.value = 4;
+    // Slow and shallow. A fast, wide vibrato sounds human and warm, which is
+    // the opposite of what this lead is for; this is barely-there drift, the
+    // sound of an oscillator that will not quite stay in tune.
+    lfo.frequency.value = 4.4; lg.gain.value = 2.5;
     lfo.connect(lg);
-    [0, 0.12].forEach(det => {
+    // Three saws, detuned hard in cents and one of them an octave down. The
+    // wide detune is the whole character - two oscillators sound like a synth
+    // patch, three beating against each other sound like a machine.
+    [-0.16, 0.14, -12].forEach(det => {
       const o = A.ac.createOscillator();
       o.type = 'sawtooth';
       o.frequency.value = mtof(midi + det);
       lg.connect(o.frequency);
       o.connect(f); o.start(t); o.stop(t + dur + 0.2);
     });
-    env(g, t, 0.08, dur, gain);
-    f.connect(g); g.connect(busFor('lead'));
+    // A long attack would make it sing; this one is meant to arrive.
+    env(g, t, 0.03, dur, gain);
+    const sat = saturator(0.3 + 0.4 * clamp01(bright));
+    if (sat) { f.connect(sat); sat.connect(g); } else { f.connect(g); }
+    g.connect(busFor('lead'));
     lfo.start(t); lfo.stop(t + dur + 0.2);
     // The oscillators above are stopped at t+dur+0.2, which is the tail env()
     // guarantees for a note this long; a lead note is never short enough for
@@ -348,28 +480,92 @@ import { SF } from './sf2.js';
     f.frequency.linearRampToValueAtTime(380 + 1420 * b, t + dur * 0.6);
     f.frequency.linearRampToValueAtTime(220 + 480 * b, t + dur);
     const osc = [];
-    chord.tones.forEach(tn => {
-      [-0.08, 0.08].forEach(det => {
+    // The chord is voiced across two octaves rather than stacked in one: the
+    // root doubled an octave below is what makes it an analogue poly rather
+    // than three notes, and it is the register a car actually reproduces.
+    // Each voice is a detuned pair, so the whole thing drifts against itself.
+    chord.tones.forEach((tn, i) => {
+      const base = ROOT + 12 + chord.root + tn - (i === 0 ? 12 : 0);
+      [-0.09, 0.09].forEach(det => {
         const o = A.ac.createOscillator();
-        o.type = 'sawtooth';
-        o.frequency.value = mtof(ROOT + 12 + chord.root + tn + det);
+        // Saw for the top voices, square for the root: the square's hollow
+        // odd harmonics are the cold half of the sound.
+        o.type = i === 0 ? 'square' : 'sawtooth';
+        o.frequency.value = mtof(base + det);
         o.connect(f); o.start(t); o.stop(t + dur + 3);
         osc.push(o);
       });
     });
     g.gain.setValueAtTime(0.0001, t);
-    g.gain.exponentialRampToValueAtTime(0.10, t + 0.8);
+    // Slow enough that the chord swells in rather than landing - the pad is
+    // weather, and weather does not have downbeats.
+    g.gain.exponentialRampToValueAtTime(0.10, t + 1.4);
     f.connect(g); g.connect(busFor('pad'));
     padNodes = { g, osc };
   }
 
   // ---- the pattern ------------------------------------------------
+  //
+  // The parts do different jobs, and the arrangement is built by adding jobs
+  // rather than by adding notes:
+  //
+  //   drums  the road      steady, unvarying, the thing you stop hearing
+  //   bass   the engine    constant motion, syncopated against the kick
+  //   arp    speed         16ths; subdivision is what reads as velocity
+  //   chords atmosphere    slow, wide, and always there
+  //   lead   the memory    sparse, and the only part allowed a tune
+  //
+  // The bass is written out as a table rather than derived from a modulo,
+  // because the groove is in exactly which 16ths are missing. A line of even
+  // 8ths on the root is not this music; the same line with two notes pushed
+  // off the beat, one shortened, and a hole where the ear expects a note is.
+
+  // [step, length in 16ths, velocity, semitones above the written root]
+  const BASS = {
+    // Cruising in traffic: roots under the kick, one push turning the bar
+    // around so it does not sit still.
+    idle: [[0, 3, 1.00, 0], [8, 2.4, 0.80, 0], [14, 1.6, 0.70, 12]],
+    // The engine. Alternating 8ths, low/high octave, with a 16th push into
+    // beats 2 and 4 and a deliberate gap on the downbeat of 4 - the hole is
+    // what the head nods into.
+    drive: [[0, 1.6, 1.00, 0], [2, 1.0, 0.70, 12], [4, 1.6, 0.88, 0],
+            [7, 1.0, 0.78, 12], [8, 1.6, 1.00, 0], [10, 1.0, 0.70, 12],
+            [13, 0.8, 0.85, 0], [14, 1.6, 0.95, 12]],
+    // Flat out: 16ths, still with gaps on 7 and 13 so it drives rather than
+    // buzzes. Shorter notes, which is most of why it sounds faster.
+    flat: [[0, 0.9, 1.00, 0], [1, 0.9, 0.62, 0], [2, 0.9, 0.78, 12],
+           [3, 0.9, 0.62, 0], [4, 0.9, 0.92, 0], [5, 0.9, 0.62, 0],
+           [6, 0.9, 0.78, 12], [8, 0.9, 1.00, 0], [9, 0.9, 0.62, 0],
+           [10, 0.9, 0.78, 12], [11, 0.9, 0.62, 0], [12, 0.9, 0.92, 0],
+           [14, 0.9, 0.80, 12], [15, 0.9, 0.70, 0]]
+  };
+
+  // The lead is four fixed motifs, one per chord - scale degrees, so it
+  // transposes with the progression and stays recognisable across it. Picking
+  // a degree by arithmetic on the step counter, as this used to, gives a
+  // different note every time and so is not a tune at all.
+  const MOTIF = [
+    [[0, 4, 0], [4, 2, 2], [8, 6, 1]],
+    [[0, 4, 2], [6, 4, 1], [12, 3, 0]],
+    [[2, 3, 4], [6, 2, 2], [8, 7, 1]],
+    [[0, 6, 1], [8, 4, 4], [12, 2, 2]]
+  ];
+
+  // Off-beat 16ths land a hair late. Not swing - a fixed sixteenth of a step,
+  // which is the difference between a sequencer and a player, and the reason
+  // the bass and the kick feel interlocked rather than merely simultaneous.
+  const PUSH = 0.06;
 
   function scheduleStep(step, t) {
     const bar = Math.floor(step / 16);
     const s16 = step % 16;
-    const chord = CHORDS[Math.floor(bar / 2) % 4];
+    const ci = Math.floor(bar / 2) % 4;
+    const chord = CHORDS[ci];
     const scale = SCALES[A.scale];
+    const stepDur = 60 / A.bpm / 4;
+    // Where we are in the 8-bar phrase; the last bar of every four is where
+    // the arrangement is allowed to do something different.
+    const turn = (bar % 4) === 3;
 
     // Pad: new chord every 2 bars, always present.
     if (s16 === 0 && bar % 2 === 0) {
@@ -388,46 +584,78 @@ import { SF } from './sf2.js';
     const D = DS;                     // current DriveState
     const intensity = D.intensity;
     const attack = 0.04 - 0.038 * Math.min(1, D.jerk / 12);
+    const swung = t + (s16 % 2 === 1 ? stepDur * PUSH : 0);
 
-    // Kick
-    const kickOn =
-      A.feel === 'half'     ? (s16 % 8 === 0)
-      : A.feel === 'double' ? (s16 % 2 === 0)
-      :                       (s16 % 4 === 0);
-    if (kickOn) kick(t, 0.85 * band);
+    // ---- drums: the road -------------------------------------------
+    // Four on the floor, and nothing clever. This part is supposed to stop
+    // being noticed within a bar; every bit of interest belongs to the bass.
+    const onFloor = A.feel === 'half' ? (s16 % 8 === 0) : (s16 % 4 === 0);
+    if (onFloor) {
+      kick(t, 0.85 * band, 1);
+    } else if (A.feel === 'double' && s16 === 14 && turn) {
+      // One pushed kick into the top of the phrase, flat out only.
+      kick(t, 0.6 * band, 0.7);
+    }
 
-    // Hats: appear at straight feel and above
-    if (A.feel !== 'half' || A.tier >= 4) {
-      // Flat out (70 mph) the hats run on every 16th whatever the feel.
-      const hatEvery = (A.feel === 'double' || A.tier >= 4) ? 1 : 2;
-      if (s16 % hatEvery === 0 && s16 % 4 !== 0) {
-        hat(t, (0.10 + 0.14 * intensity) * band, s16 % 8 === 6);
+    // Backbeat on 2 and 4 from the moment there is a beat at all. It is the
+    // clap, not the kick, that tells the driver what tempo they are hearing.
+    if (s16 === 4 || s16 === 12) {
+      if (A.feel !== 'half' || s16 === 12) {
+        clap(t, (0.16 + 0.10 * intensity) * band, A.feel === 'double' ? 0.7 : 1);
       }
     }
 
-    // Bass: root, denser with intensity
-    const bassEvery = A.feel === 'half' ? 8 : intensity > 0.5 ? 2 : 4;
-    if (s16 % bassEvery === 0) {
-      const oct = (s16 % 8 === 0) ? 0 : 12;
-      bass(t, ROOT - 12 + chord.root + (oct === 0 ? 0 : 0),
-           (60 / A.bpm / 4) * (bassEvery * 0.85), 0.30 * band, attack,
-           0.35 + 0.65 * intensity);
+    // Hats hold the subdivision: 8ths normally, 16ths once the arrangement is
+    // running, which is the cheapest way to make the same tempo feel quicker.
+    if (A.feel !== 'half' || A.tier >= 4) {
+      const hatEvery = (A.feel === 'double' || A.tier >= 4) ? 1 : 2;
+      if (s16 % hatEvery === 0 && s16 % 4 !== 0) {
+        hat(swung, (0.09 + 0.13 * intensity) * band * (s16 % 4 === 2 ? 1 : 0.65),
+            s16 === 14 && !turn);
+      }
     }
 
-    // Arp: from the 20 mph breakpoint.
-    if (A.tier >= 2 && s16 % 2 === 1) {
-      const idx = (step * 3) % scale.length;
-      const oc = ((step >> 2) % 2) * 12;
-      pluck(t, ROOT + 12 + chord.root + scale[idx] + oc,
-            60 / A.bpm / 4 * 1.4, 0.085 * band * (0.5 + intensity * 0.5),
+    // ---- bass: the engine ------------------------------------------
+    // Which line is playing is the arrangement's main gear change: sparse in
+    // traffic, alternating 8ths at road speed, 16ths flat out.
+    const line = A.feel === 'half' ? BASS.idle
+               : (A.feel === 'double' || intensity > 0.62) ? BASS.flat
+               : BASS.drive;
+    for (const [st, len, vel, oct] of line) {
+      if (st !== s16) continue;
+      // The turnaround bar drops the note that would land on the last 8th,
+      // so the phrase has somewhere to arrive. A rest is a note.
+      if (turn && st === 14 && line !== BASS.idle) continue;
+      // Notes shorten as the drive gets harder: same pattern, more urgency.
+      const gate = len * (1 - 0.25 * intensity);
+      bass(swung, ROOT - 12 + chord.root + oct,
+           stepDur * gate * 0.9, 0.30 * band * (0.55 + 0.45 * vel), attack,
+           0.3 + 0.7 * (vel * (0.45 + 0.55 * intensity)));
+    }
+
+    // ---- arp: speed -------------------------------------------------
+    // Straight 16ths from the 20 mph breakpoint, climbing through the chord
+    // and folding back an octave - the wheel-rotation part. It plays every
+    // 16th rather than every other one, because continuous motion is the
+    // point; what changes with speed is how bright and how short it is.
+    if (A.tier >= 2) {
+      const seq = [0, 1, 2, 1, 2, 3, 2, 1];   // up, back, further up, back
+      const idx = seq[step % seq.length];
+      const oc = 12 * ((step >> 3) % 2);
+      const deg = scale[(ci * 2 + idx) % scale.length];
+      pluck(swung, ROOT + 12 + chord.root + deg + oc,
+            stepDur * (0.9 - 0.45 * intensity),
+            0.070 * band * (0.45 + 0.55 * intensity) * (s16 % 4 === 0 ? 1 : 0.75),
             null, 0.3 + 0.7 * intensity);
     }
 
-    // Lead: from the 30 mph breakpoint, sparse long notes.
-    if (A.tier >= 3 && s16 === 0 && bar % 2 === 1) {
-      const idx = (bar * 2) % scale.length;
-      lead(t, ROOT + 24 + chord.root + scale[idx], (60 / A.bpm) * 3, 0.07 * band,
-           0.4 + 0.6 * intensity);
+    // ---- lead: the thing the driver remembers ------------------------
+    if (A.tier >= 3 && bar % 2 === 1) {
+      for (const [st, len, deg] of MOTIF[ci]) {
+        if (st !== s16) continue;
+        lead(t, ROOT + 24 + chord.root + scale[deg % scale.length],
+             stepDur * len, 0.07 * band, 0.4 + 0.6 * intensity);
+      }
     }
   }
 
@@ -465,7 +693,10 @@ import { SF } from './sf2.js';
     const spd = (typeof D.speed === 'number' && isFinite(D.speed))
       ? Math.min(1, Math.max(0, D.speed / 33))   // 0..1 over 0..120 km/h
       : D.aggression;
-    A.pendingBpm = 104 + 28 * (isFinite(spd) ? spd : 0);
+    // 100-124. The genre lives just under half-time-able territory: slow
+    // enough that 16ths are playable and fast enough to drive. The old range
+    // topped out where the 16th arp starts to smear.
+    A.pendingBpm = 100 + 24 * (isFinite(spd) ? spd : 0);
 
     // Feel carries the big energy jumps, not BPM (spec 4.4).
     const energy = 0.6 * spd + 0.4 * D.aggression;
@@ -476,14 +707,20 @@ import { SF } from './sf2.js';
     else A.pendingFeel = 'straight';
 
     // Scale from aggression, with hysteresis.
+    // Minor for ordinary driving, phrygian once it stops being ordinary. The
+    // pentatonic rung in the middle is the one that used to make hard driving
+    // sound *lighter* than gentle driving, because dropping the 2nd and 6th
+    // takes out exactly the two notes carrying the menace. The route is now
+    // minor to phrygian and back, and the phrygian b2 is the whole point.
     const ag = D.aggression;
-    if (A.scale === 'minor' && ag > 0.38) A.scale = 'pentatonic';
-    else if (A.scale === 'pentatonic' && ag < 0.32) A.scale = 'minor';
-    else if (A.scale === 'pentatonic' && ag > 0.73) A.scale = 'phrygian';
-    else if (A.scale === 'phrygian' && ag < 0.67) A.scale = 'pentatonic';
+    if (A.scale === 'pentatonic') A.scale = 'minor';     // retired rung
+    if (A.scale === 'minor' && ag > 0.45) A.scale = 'phrygian';
+    else if (A.scale === 'phrygian' && ag < 0.38) A.scale = 'minor';
 
     // Master cutoff: exponential, dipped by braking, muffled further at rest.
-    const base = 340 * Math.pow(38, D.intensity);
+    // Darker floor, same ceiling: at a crawl the mix is muffled and close, and
+    // opening it up is most of what acceleration feels like.
+    const base = 260 * Math.pow(48, D.intensity);
     const dip = 1 - 0.55 * D.brake;
     const calm = 1 - 0.45 * A.rest;
     A.lp.frequency.setTargetAtTime(Math.max(200, base * dip * calm), t, RESP.cutoff);
@@ -500,4 +737,4 @@ import { SF } from './sf2.js';
     updateRoleGains(dt);
   }
 
-export { A, CHORDS, CUT, RESP, ROLE_PAN, busFor, LOOKAHEAD, MIN_TAIL, ROOT, SCALES, TICK, applyMapping, bass, buildBuses, env, hat, initAudio, kick, lead, mtof, padChord, padNodes, pluck, scheduleStep, scheduler, silenceAll, startAudio, stopAudio, toggleAudio };
+export { A, BASS, CHORDS, CUT, MOTIF, PUSH, clap, duck, RESP, ROLE_PAN, busFor, LOOKAHEAD, MIN_TAIL, ROOT, SCALES, TICK, applyMapping, bass, buildBuses, env, hat, initAudio, kick, lead, mtof, padChord, padNodes, pluck, scheduleStep, scheduler, silenceAll, startAudio, stopAudio, toggleAudio };
