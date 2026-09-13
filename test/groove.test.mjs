@@ -86,10 +86,14 @@ test('harder driving shortens the notes rather than adding more', () => {
   const notesIn = rows => rows.filter(bassed).length;
   const calm = bar({ intensity: 0.1 });
   const hard = bar({ intensity: 0.55 });
+  // Measured off the bass filter's own envelope, not off the step's earliest
+  // stop() - there is a hat on the same 16th, and its 45ms buffer would be
+  // what the test was reading.
   const gateOf = rows => {
     const r = rows.find(bassed);
-    const starts = r.log.filter(e => e.op === 'stop');
-    return Math.min(...starts.map(e => e.time)) - r.t;
+    const id = r.log.find(e => e.param === 'Q' && e.value >= 4).id;
+    const sweep = r.log.filter(e => e.id === id && e.param === 'frequency');
+    return sweep[sweep.length - 1].time - r.t;
   };
   assert.equal(notesIn(calm), notesIn(hard), 'same line, same number of notes');
   assert.ok(gateOf(hard) < gateOf(calm),
@@ -133,4 +137,60 @@ test('the progression does not resolve to a major chord', () => {
   }
   assert.ok(CHORDS.some(c => c.tones[1] === 3 && c.root !== 0),
     'and it comes home through another minor chord, not the relative major');
+});
+
+// ---- measured against the reference track -------------------------
+//
+// These three numbers came out of analysing a Perturbator track the user
+// pointed at (135 BPM, four on the floor): the mid band drops to 0.52 at each
+// kick and needs most of a beat to come back, the hats are loudest on the
+// quarter, and the bass fundamental sits around 45-65Hz. Each one is here
+// because the first version of this code got it wrong in a way that was
+// audible but not obvious from reading the code.
+
+test('the pump takes most of a beat to come back, at any tempo', () => {
+  for (const bpm of [118, 135, 140]) {
+    ctx = new FakeAudioContext();
+    initAudio(ctx);
+    A.running = true; A.bpm = bpm; A.rest = 0; A.tier = 4; A.feel = 'straight';
+    DS.intensity = 0.4; DS.jerk = 0;
+    ctx.clear();
+    scheduleStep(0, 0);
+    const dip = ctx.log.find(e => e.param === 'gain' && e.op === 'setValueAtTime'
+                                  && e.value > 0.3 && e.value < 1);
+    const back = ctx.log.find(e => e.param === 'gain' && e.op === 'setTargetAtTime' && e.value === 1);
+    assert.ok(dip.value < 0.6, `the duck is ${dip.value}, too shallow to hear as a swell`);
+    // setTargetAtTime's time constant is the shape; 90% recovery is ~2.3 of
+    // them, and that must land inside the beat rather than inside the 8th.
+    const beat = 60 / bpm;
+    const tc = 0.55 * beat;
+    assert.ok(2.3 * tc > beat * 0.7 && 2.3 * tc < beat * 1.6,
+      `at ${bpm} BPM the swell resolves in ${(2.3 * tc / beat).toFixed(2)} beats`);
+    assert.ok(back.time > dip.time, 'and it recovers after it ducks');
+  }
+});
+
+test('the hats are loudest on the quarter, not absent from it', () => {
+  const rows = bar({ feel: 'double' });
+  // A hat is the only voice built from a highpass filter.
+  const level = r => {
+    const h = r.log.find(e => e.param === 'frequency' && e.value === 7000);
+    if (!h) return 0;
+    const g = r.log.filter(e => e.param === 'gain' && e.op === 'exponentialRamp');
+    return Math.max(...g.map(e => e.value));
+  };
+  const q = level(rows[0]), e8 = level(rows[2]), e16 = level(rows[1]);
+  assert.ok(q > 0, 'there is a hat on the downbeat at all');
+  assert.ok(q > e8 && e8 > e16,
+    `accent must run quarter > eighth > sixteenth (${q} ${e8} ${e16})`);
+});
+
+test('the bass sits where a bass sits', () => {
+  const rows = bar();
+  const r = rows.find(bassed);
+  // The sub sine is the lowest thing in the voice; the saw is the note.
+  const hz = r.log.filter(e => e.param === 'frequency' && e.op === 'value').map(e => e.value);
+  const lowest = Math.min(...hz);
+  assert.ok(lowest >= 40 && lowest <= 70,
+    `the bass fundamental is ${lowest.toFixed(1)}Hz - a bass lives at 45-65`);
 });

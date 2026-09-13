@@ -10,7 +10,7 @@ import { SF } from './sf2.js';
     ac: null, master: null, lp: null, comp: null, limiter: null,
     panBus: null, drumBus: null, roleBus: null, pump: null,
     running: false,
-    bpm: 112, pendingBpm: 112,
+    bpm: 126, pendingBpm: 126,
     spd: 0, energy: 0,
     step: 0,                 // 0..127  (8 bars of 16ths)
     nextTime: 0,
@@ -291,17 +291,25 @@ import { SF } from './sf2.js';
     return atk + dec;
   }
 
-  // How far a kick pulls everything else down, and how long the recovery
-  // takes. Deep enough to hear as movement, short enough that the bass is
-  // already back up by the following 8th.
-  const PUMP_DEPTH = 0.42;
-  const PUMP_BACK = 0.085;
+  // How far a kick pulls everything else down, and how long the recovery takes.
+  //
+  // Both numbers are measured off a Perturbator track rather than guessed: the
+  // mid band drops to 0.52 of its level at each kick and does not reach 0.9
+  // again until ~420ms later, which at 135 BPM is essentially the whole beat.
+  // The first version of this recovered in 85ms, which is a duck - you hear it
+  // happen to the bass and then it is over. Taking a full beat is what turns
+  // it into the swell the whole genre is built on, and it is why a line of
+  // flat 8ths sounds like it is breathing rather than repeating.
+  const PUMP_DEPTH = 0.48;
+  // As a fraction of a beat, so the swell stays locked to the tempo instead of
+  // becoming a duck when the driver speeds up.
+  const PUMP_BACK = 0.55;
 
   function duck(t, amount) {
     if (!A.pump || !A.pump.gain.setTargetAtTime) return;
     const depth = Math.max(0, Math.min(1, amount));
     A.pump.gain.setValueAtTime(1 - PUMP_DEPTH * depth, t);
-    A.pump.gain.setTargetAtTime(1, t + 0.01, PUMP_BACK);
+    A.pump.gain.setTargetAtTime(1, t + 0.01, PUMP_BACK * (60 / A.bpm));
   }
 
   function kick(t, gain, pump = 1) {
@@ -400,12 +408,16 @@ import { SF } from './sf2.js';
     g.connect(A.pump || A.master);
     o.start(t); o.stop(t + life + 0.05);
 
-    // A sine an octave down, under the filter rather than through it. The
-    // resonant saw carries the note; this carries the weight, which is the
-    // half of the sound a phone speaker throws away and a car does not.
+    // A sine under the filter rather than through it. The resonant saw carries
+    // the note; this carries the weight, which is the half of the sound a
+    // phone speaker throws away and a car does not.
+    //
+    // An octave down, except when the note is already low enough that an
+    // octave below it is under 40Hz - there the sub is inaudible on anything
+    // the driver owns and only eats headroom, so it doubles the note instead.
     const sub = A.ac.createOscillator(), sg = A.ac.createGain();
     sub.type = 'sine';
-    sub.frequency.value = mtof(midi - 12);
+    sub.frequency.value = mtof(midi >= 45 ? midi - 12 : midi);
     env(sg, t, Math.max(attack, 0.008), dur, gain * 0.55);
     sub.connect(sg); sg.connect(A.pump || A.master);
     sub.start(t); sub.stop(t + life + 0.05);
@@ -607,10 +619,19 @@ import { SF } from './sf2.js';
 
     // Hats hold the subdivision: 8ths normally, 16ths once the arrangement is
     // running, which is the cheapest way to make the same tempo feel quicker.
+    // The reference track does exactly this between its verse and its later
+    // sections, and nothing else about the drums changes.
+    //
+    // They are loudest *on* the quarter, not absent from it. Skipping the
+    // quarter - which this did, on the theory that the kick already has it -
+    // is what makes a hat line sound like an offbeat ornament instead of the
+    // thing measuring the bar. Measured off the same track, the accent runs
+    // quarter 1.0, eighth 0.5, sixteenth 0.25.
     if (A.feel !== 'half' || A.tier >= 4) {
       const hatEvery = (A.feel === 'double' || A.tier >= 4) ? 1 : 2;
-      if (s16 % hatEvery === 0 && s16 % 4 !== 0) {
-        hat(swung, (0.09 + 0.13 * intensity) * band * (s16 % 4 === 2 ? 1 : 0.65),
+      if (s16 % hatEvery === 0) {
+        const accent = s16 % 4 === 0 ? 1 : s16 % 2 === 0 ? 0.5 : 0.25;
+        hat(swung, (0.10 + 0.14 * intensity) * band * accent,
             s16 === 14 && !turn);
       }
     }
@@ -618,6 +639,11 @@ import { SF } from './sf2.js';
     // ---- bass: the engine ------------------------------------------
     // Which line is playing is the arrangement's main gear change: sparse in
     // traffic, alternating 8ths at road speed, 16ths flat out.
+    //
+    // The register is an octave below where this started. Measured, the
+    // reference track's bass fundamental sits around 45-65Hz - the low A here
+    // is 55Hz - and an octave above that it reads as a lead playing low rather
+    // than as the floor of the track.
     const line = A.feel === 'half' ? BASS.idle
                : (A.feel === 'double' || intensity > 0.62) ? BASS.flat
                : BASS.drive;
@@ -628,7 +654,7 @@ import { SF } from './sf2.js';
       if (turn && st === 14 && line !== BASS.idle) continue;
       // Notes shorten as the drive gets harder: same pattern, more urgency.
       const gate = len * (1 - 0.25 * intensity);
-      bass(swung, ROOT - 12 + chord.root + oct,
+      bass(swung, ROOT - 24 + chord.root + oct,
            stepDur * gate * 0.9, 0.30 * band * (0.55 + 0.45 * vel), attack,
            0.3 + 0.7 * (vel * (0.45 + 0.55 * intensity)));
     }
@@ -693,10 +719,12 @@ import { SF } from './sf2.js';
     const spd = (typeof D.speed === 'number' && isFinite(D.speed))
       ? Math.min(1, Math.max(0, D.speed / 33))   // 0..1 over 0..120 km/h
       : D.aggression;
-    // 100-124. The genre lives just under half-time-able territory: slow
-    // enough that 16ths are playable and fast enough to drive. The old range
-    // topped out where the 16th arp starts to smear.
-    A.pendingBpm = 100 + 24 * (isFinite(spd) ? spd : 0);
+    // 118-140. The reference track runs at 135, and the earlier 100-124 was
+    // simply too slow for this: at 104 the 16th arp plods and the half-feel
+    // below it stops sounding like restraint and starts sounding like a
+    // dirge. Crawling traffic is handled by the half-feel dropping the kick to
+    // every other beat, not by taking the tempo down with it.
+    A.pendingBpm = 118 + 22 * (isFinite(spd) ? spd : 0);
 
     // Feel carries the big energy jumps, not BPM (spec 4.4).
     const energy = 0.6 * spd + 0.4 * D.aggression;

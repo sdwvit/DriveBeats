@@ -169,7 +169,7 @@ import { MAX_SF_VOICES, SF, cachedZones, loadSamples, sfVoice } from './sf2.js';
   // non-finite value would otherwise stick in A.bpm forever, because NaN
   // survives both the subtraction and the clamp.
   function slewBpm() {
-    if (!isFinite(A.pendingBpm)) A.pendingBpm = 112;
+    if (!isFinite(A.pendingBpm)) A.pendingBpm = 126;
     if (!isFinite(A.bpm)) { A.bpm = A.pendingBpm; return; }
     const d = A.pendingBpm - A.bpm;
     A.bpm += Math.max(-4, Math.min(4, d));
