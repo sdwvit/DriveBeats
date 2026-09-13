@@ -150,6 +150,28 @@
       disk, so a 315&nbsp;MB font costs tens of MB, not hundreds. The soundfont is
       not remembered between sessions \u2014 pick it again each drive.</p>
 
+    <h2 style="margin-top:22px">Record a drive</h2>
+    <p class="hint" style="margin:0 0 10px">Saves the raw accelerometer and GPS to a file, so the
+      formulas can be checked against a drive that actually happened rather than a guess at one.</p>
+    <div class="row">
+      <button id="recToggle">Start recording</button>
+      <button id="recMark" disabled>Mark</button>
+    </div>
+    <label style="display:flex;align-items:center;gap:8px;margin-top:12px;font-size:.8rem">
+      <input type="checkbox" id="recPos" style="width:18px;height:18px;flex:0 0 auto">
+      <span>Include location <span class="hint">&mdash; speed and heading are always saved; this
+        adds latitude and longitude, which is a map of where you drove</span></span>
+    </label>
+    <p id="recStat" class="hint" style="margin-top:10px">Not recording.</p>
+    <div class="row" id="recSaveRow" hidden>
+      <button id="recSave">Download log</button>
+      <button id="recShare" hidden>Share</button>
+      <button id="recDrop">Discard</button>
+    </div>
+    <p class="hint">Tap <strong>Mark</strong> when something happens you want me to look at &mdash;
+      a roundabout, a hard stop, a hill. The ten seconds either side of a mark are worth more than
+      the rest of the file, because that is the part where what the car did is known.</p>
+
     <h2 style="margin-top:22px">Stored data</h2>
     <div class="row">
       <button id="resetStore">Reset storage</button>

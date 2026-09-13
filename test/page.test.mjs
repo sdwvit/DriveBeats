@@ -35,7 +35,7 @@ test('index.html loads the entry module', () => {
 // Node cannot import the modules with a fake DOM in scope, so they are
 // concatenated in dependency order - the order the browser resolves them in -
 // with their import/export lines dropped, and run in one sandbox.
-const ORDER = ['util', 'motion', 'midi', 'midi-store', 'sf2', 'playback', 'engine', 'ui'];
+const ORDER = ['util', 'motion', 'recorder', 'midi', 'midi-store', 'sf2', 'playback', 'engine', 'ui'];
 
 test('the modules load without throwing, with their listeners attached', () => {
   const script = ORDER.map(n => fs.readFileSync(path.join(ROOT, 'js', n + '.js'), 'utf8')
@@ -75,6 +75,9 @@ function loadPage(script, over = {}) {
       },
       addEventListener: ev => listeners.push(ev),
       visibilityState: 'visible',
+      // The log download builds an anchor and clicks it.
+      createElement: () => el(),
+      body: { appendChild() {}, removeChild() {} },
     },
     localStorage: { getItem: () => null, setItem() {} },
     navigator: {},
@@ -83,6 +86,8 @@ function loadPage(script, over = {}) {
     setInterval: () => 0,
     setTimeout: () => 0,
     location: { protocol: 'https:', hostname: 'localhost' },
+    Blob: function () {}, File: function () {},
+    URL: { createObjectURL: () => 'blob:x', revokeObjectURL() {} },
     ...over,
   };
   sandbox.window = sandbox;

@@ -3,6 +3,7 @@ import { M, ROLES, ROLE_LABELS, loadParsed, parseMidi, rebuildNotes } from './mi
 import { clearMidi, deleteMidi, listMidi, loadMidiNamed, loadSavedMidi, resetStorage, saveMidi } from './midi-store.js';
 import { CFG, DS, S, loadConfig, onFix, onMotion } from './motion.js';
 import { sfReset, sfSync } from './playback.js';
+import { REC, recFix, recMark, recMotion, recSummary, recText, startRec, stopRec } from './recorder.js';
 import { SF, parseSf2 } from './sf2.js';
 import { $, clamp, fmt } from './util.js';
 
@@ -53,7 +54,13 @@ import { $, clamp, fmt } from './util.js';
           'and check Settings \u203a Apps \u203a Safari \u203a Motion & Orientation Access is on.';
         err.hidden = false; return;
       }
-      window.addEventListener('devicemotion', onMotion);
+      // The recorder sits in front of the pipeline, not inside it: it writes
+      // down what arrived, and is not affected by what we then make of it.
+      window.addEventListener('devicemotion', e => {
+        const t = performance.now();
+        recMotion(e, t);
+        onMotion(e, t);
+      });
       startGeo();
       requestWakeLock();
 
@@ -133,6 +140,8 @@ import { $, clamp, fmt } from './util.js';
         }
         let hd = c.heading;
         if (!(typeof hd === 'number' && isFinite(hd))) hd = null;
+        recFix({ speed: sp, heading: hd, accuracy: c.accuracy,
+                 latitude: c.latitude, longitude: c.longitude }, t);
         onFix({ speed: sp, heading: hd, t });
         lastFix = { c: { latitude: c.latitude, longitude: c.longitude, accuracy: c.accuracy }, t };
       },
@@ -172,6 +181,82 @@ import { $, clamp, fmt } from './util.js';
   $('flipLat').addEventListener('click', () => {
     CFG.signLat *= -1; localStorage.setItem('db.signLat', CFG.signLat); updateSignLabel();
   });
+
+  // ---------- drive recorder ----------
+  function renderRec() {
+    const s = recSummary();
+    $('recToggle').textContent = REC.on ? 'Stop recording' : 'Start recording';
+    $('recMark').disabled = !REC.on;
+    $('recPos').disabled = REC.on;      // changing it mid-log would split the file
+    $('recSaveRow').hidden = REC.on || !s.rows;
+    if (REC.on) {
+      $('recStat').textContent =
+        'Recording \u2014 ' + fmt(s.seconds, 0) + 's, ' + s.motion + ' samples, ' +
+        s.fixes + ' fixes, ' + s.marks + ' marks, ' + (s.bytes / 1048576).toFixed(1) + ' MB';
+    } else if (s.rows) {
+      $('recStat').textContent =
+        (s.full ? 'Stopped at the size limit \u2014 ' : 'Recorded ') +
+        fmt(s.seconds, 0) + 's, ' + s.motion + ' samples, ' + s.fixes + ' fixes, ' +
+        s.marks + ' marks, ' + (s.bytes / 1048576).toFixed(1) + ' MB';
+    } else {
+      $('recStat').textContent = 'Not recording.';
+    }
+  }
+
+  function logName() {
+    const d = new Date();
+    const p = n => String(n).padStart(2, '0');
+    return 'drivebeats-' + d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) +
+           '-' + p(d.getHours()) + p(d.getMinutes()) + '.csv';
+  }
+
+  $('recPos').addEventListener('change', () => { REC.withPosition = $('recPos').checked; });
+
+  $('recToggle').addEventListener('click', () => {
+    if (REC.on) { stopRec(); }
+    else {
+      REC.withPosition = $('recPos').checked;
+      startRec({
+        ua: navigator.userAgent,
+        rate: S.rate ? S.rate.toFixed(0) + 'Hz' : 'unknown',
+        midi: M.active ? M.name : 'built-in',
+        position: REC.withPosition ? 'included' : 'omitted'
+      });
+    }
+    renderRec();
+  });
+
+  $('recMark').addEventListener('click', () => {
+    recMark('mark ' + (REC.marks + 1), performance.now());
+    renderRec();
+  });
+
+  $('recDrop').addEventListener('click', () => { startRec(); stopRec(); renderRec(); });
+
+  $('recSave').addEventListener('click', () => {
+    const blob = new Blob([recText()], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = logName();
+    document.body.appendChild(a);
+    a.click();
+    // Revoked on a timer rather than immediately: iOS has not finished with
+    // the URL when click() returns, and revoking it there saves an empty file.
+    setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 30000);
+  });
+
+  // iOS gives a Blob download nowhere obvious to land, so offer the share
+  // sheet as well where the browser has one - that is how a file actually gets
+  // off a phone.
+  if (navigator.canShare) {
+    $('recShare').hidden = false;
+    $('recShare').addEventListener('click', async () => {
+      try {
+        const file = new File([recText()], logName(), { type: 'text/csv' });
+        if (navigator.canShare({ files: [file] })) await navigator.share({ files: [file] });
+      } catch (e) { /* the driver cancelled the sheet */ }
+    });
+  }
 
   // ---------- transport ----------
   // One button, because it is pressed at a red light and read at a glance: it
@@ -375,6 +460,7 @@ import { $, clamp, fmt } from './util.js';
   // ---------- render ----------
   function render() {
     renderTransport();
+    renderRec();
     $('n-feel').textContent = DS.stationary ? 'at rest' : A.feel;
     $('n-meta').textContent =
       Math.round(A.bpm) + ' bpm · ' + (M.active ? 'midi' : A.scale) +
